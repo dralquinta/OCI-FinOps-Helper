@@ -4,6 +4,8 @@ import json
 from oci.config import from_file
 from oci.signer import Signer
 
+OCID=''
+
 def main():
 
     config = from_file()
@@ -15,20 +17,23 @@ def main():
     pass_phrase=config['pass_phrase']
     )
     response = call_endpoint(auth)
-    response_to_csv(response)
+    print(response)
+
     
 
 def call_endpoint(auth):
     endpoint = 'https://usageapi.us-ashburn-1.oci.oraclecloud.com/20200107/usage'
     body = {
     'tenantId': 'ocid1.tenancy.oc1..aaaaaaaaoqdygmiidrabhv3y4hkr3rb3z6dpmgotvq2scffra6jt7rubresa',
-    'timeUsageStarted': '2020-12-01T00:00:00Z',
-    'timeUsageEnded': '2020-12-29T00:00:00Z',
+    'timeUsageStarted': '2022-12-01T00:00:00Z',
+    'timeUsageEnded': '2022-12-29T00:00:00Z',
     'granularity': 'DAILY',  
     "queryType": "COST",
     "groupBy": [   
+        "tagKey",
+        "tagValue",
         "service",
-        "compartmentPath"    
+        "compartmentPath",
     ],
     "compartmentDepth": 4,
 
@@ -36,17 +41,23 @@ def call_endpoint(auth):
 
     response = requests.post(endpoint, json=body, auth=auth)
     response.raise_for_status()
+    json_string=response.json()
     with open('out.json','w') as f:
-        json.dump(response.json(), f, ensure_ascii=False, indent=4)
-    response_to_csv(response)
+        json.dump(json_string, f, ensure_ascii=False, indent=4)    
+    f.close()
+        
+    df = pd.DataFrame.from_dict(json_string, orient='index')
+    df = df.transpose()           
+    df.to_csv('csvfile.csv', encoding='utf-8', index=False)
+    
+    
+
+    
+   
+   
     return response    
 
 
-def response_to_csv(response):
-    pdObj = pd.read_json(response.json(), orient='index')
-    csvData = pdObj.to_csv(index=False)
-    
-    
     
 if __name__ == "__main__":
     main() 
