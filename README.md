@@ -2,9 +2,13 @@
 
 To excecute: 
 
-./collector.sh
+```shell
+$ ./collector.sh ocid1.tenancy.oc1..aaaaaaaaoqfoobar us-ashburn-1 2022-08-02 2022-08-03
+/home/opc/REPOS/cost_report/venv/lib64/python3.6/site-packages/oci/_vendor/httpsig_cffi/sign.py:10: CryptographyDeprecationWarning: Python 3.6 is no longer supported by the Python core team. Therefore, support for it is deprecated in cryptography and will be removed in a future release.
+  from cryptography.hazmat.backends import default_backend  # noqa: F401
+```
 
-This will generate a json file similar to this: 
+This will generate a json file named `output.json` similar to this: 
 
 ```json
 {
@@ -17,7 +21,7 @@ This will generate a json file similar to this:
             "tenantId": null,
             "tenantName": null,
             "compartmentId": null,
-            "compartmentPath": "ecrcloud/siva",
+            "compartmentPath": "yourcloudtenancy/compartment",
             "compartmentName": null,
             "service": "Block Storage",
             "resourceName": null,
@@ -52,5 +56,9 @@ This will generate a json file similar to this:
         },
 ```
 
+It will also generate a file called `output.csv` which can be later worked in Excel. 
+
 
 You can play with the request body to add more details on the results. More details on how to use the API in the [following link](https://docs.oracle.com/en-us/iaas/Content/Billing/Concepts/costanalysisoverview.htm#cost_analysis_using_the_api)
+
+Value that corresponds to cost is determined by entry `computedAmount`
