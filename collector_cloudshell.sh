@@ -6,12 +6,12 @@
 
 echo "============== OCI Cost Report Collector (Cloud Shell Enhanced) =============="
 
-# Check if we're in Cloud Shell
+# Check if we're in Cloud Shell (will be refined in check_auth function)
 if [ "$OCI_CLI_CLOUD_SHELL" = "true" ] || [ -f "/etc/oci_env" ]; then
     echo "✓ Detected OCI Cloud Shell environment"
     CLOUD_SHELL=true
 else
-    echo "ℹ Running in standard environment"
+    echo "ℹ Running in standard environment (will verify authentication method)"
     CLOUD_SHELL=false
 fi
 
@@ -74,25 +74,34 @@ check_dependencies() {
 check_auth() {
     echo "============== Checking Authentication =============="
     
-    if [ "$CLOUD_SHELL" = "true" ]; then
-        echo "Checking Cloud Shell authentication..."
-        if oci iam region list --output table 2>/dev/null | head -5; then
-            echo "✓ Cloud Shell authentication is working"
-        else
-            echo "❌ Cloud Shell authentication failed"
-            echo "Try running: oci session authenticate"
-            exit 1
-        fi
+    # First, try to detect if we're actually in Cloud Shell by testing OCI CLI
+    if oci iam region list --output table 2>/dev/null >/dev/null; then
+        echo "✓ OCI CLI authentication is working (Cloud Shell detected)"
+        CLOUD_SHELL=true
+        echo "Authentication method: Instance Principal (Cloud Shell)"
+    elif [ -f "$HOME/.oci/config" ]; then
+        echo "✓ OCI config file found at $HOME/.oci/config"
+        echo "Authentication method: API Key (Local config)"
+        cat "$HOME/.oci/config" | grep -E "(region|tenancy)" || true
+        CLOUD_SHELL=false
     else
-        echo "Checking local OCI configuration..."
-        if [ -f "$HOME/.oci/config" ]; then
-            echo "✓ OCI config file found"
-            cat "$HOME/.oci/config" | grep -E "(region|tenancy)" || true
-        else
-            echo "❌ No OCI config file found at $HOME/.oci/config"
-            echo "Please set up OCI CLI configuration first"
-            exit 1
-        fi
+        echo "❌ No authentication method available"
+        echo ""
+        echo "Options:"
+        echo "1. If you're in OCI Cloud Shell:"
+        echo "   - Cloud Shell should have automatic authentication"
+        echo "   - Try: oci iam region list"
+        echo "   - If that fails, try: oci session authenticate"
+        echo ""
+        echo "2. If you're in a local environment:"
+        echo "   - Set up OCI CLI: oci setup config"
+        echo "   - Or create ~/.oci/config manually"
+        echo ""
+        echo "3. Current environment detection:"
+        echo "   - OCI_CLI_CLOUD_SHELL: ${OCI_CLI_CLOUD_SHELL:-'not set'}"
+        echo "   - /etc/oci_env exists: $([ -f /etc/oci_env ] && echo 'yes' || echo 'no')"
+        echo "   - HOME: $HOME"
+        exit 1
     fi
 }
 

@@ -6,6 +6,7 @@ import sys
 import pandas as pd
 import json
 import os
+import subprocess
 from datetime import date
 try:
     # Try OCI SDK auth first (for local development)
@@ -15,20 +16,50 @@ try:
 except ImportError:
     # Fallback for Cloud Shell environment
     OCI_SDK_AVAILABLE = False
-    print("OCI SDK not available, will use Cloud Shell authentication")
+    print("OCI SDK not available, will use OCI CLI authentication")
 
 # Check if running in Cloud Shell
 def is_cloud_shell():
-    return os.environ.get('OCI_CLI_CLOUD_SHELL', '').lower() == 'true' or os.path.exists('/etc/oci_env')
+    # Check environment variables
+    if os.environ.get('OCI_CLI_CLOUD_SHELL', '').lower() == 'true':
+        return True
+    if os.path.exists('/etc/oci_env'):
+        return True
+    
+    # Test if OCI CLI works (best indicator of Cloud Shell)
+    try:
+        import subprocess
+        result = subprocess.run(['oci', 'iam', 'region', 'list'], 
+                              capture_output=True, text=True, timeout=10)
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        return False
 
 def get_auth_method():
     """Determine the best authentication method for the current environment"""
-    if is_cloud_shell():
-        return "cloud_shell"
-    elif OCI_SDK_AVAILABLE:
+    # First, test if OCI CLI works (Cloud Shell or properly configured local)
+    try:
+        import subprocess
+        result = subprocess.run(['oci', 'iam', 'region', 'list'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return "oci_cli"
+    except:
+        pass
+    
+    # Check if we have OCI SDK and config file
+    if OCI_SDK_AVAILABLE and os.path.exists(os.path.expanduser('~/.oci/config')):
         return "oci_sdk"
-    else:
-        return "manual"
+    
+    # If OCI CLI is available but config doesn't exist, assume Cloud Shell
+    try:
+        import subprocess
+        subprocess.run(['oci', '--version'], capture_output=True, timeout=5)
+        return "oci_cli"  # OCI CLI available, use it
+    except:
+        pass
+        
+    return "none"
 
 def get_cloud_shell_auth():
     """Get authentication headers for Cloud Shell using instance principal"""
