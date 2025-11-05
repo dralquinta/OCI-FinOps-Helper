@@ -1,3 +1,36 @@
-venv
-*.json
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Generated Output Files
+output_merged.csv
+instance_metadata.json
+request_*.json
+api_response_*.json
+api_error_*.log
+compute_instances.json
+output_pre_enrichment.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep placeholder files in git
+!output.json
+
 *.csv
