@@ -195,6 +195,10 @@ def call_endpoint(tenancy_ocid, home_region, from_date, to_date):
             "tagValue",
             "service",
             "compartmentPath",
+            "shape",
+            "resourceId",
+            "resourceName",
+            "skuPartNumber",
         ],
         "compartmentDepth": 4,
     }

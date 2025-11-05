@@ -97,7 +97,11 @@ main() {
         "tagKey",
         "tagValue",
         "service",
-        "compartmentPath"
+        "compartmentPath",
+        "shape",
+        "resourceId",
+        "resourceName",
+        "skuPartNumber"
     ],
     "compartmentDepth": 4
 }
