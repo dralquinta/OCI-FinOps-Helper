@@ -192,9 +192,9 @@ def call_endpoint(tenancy_ocid, home_region, from_date, to_date):
         "queryType": "COST",
         "groupBy": [   
             "service",
-            "compartmentPath",
-            "skuPartNumber",
             "skuName",
+            "resourceId",
+            "skuPartNumber",
         ],
         "compartmentDepth": 4,
     }

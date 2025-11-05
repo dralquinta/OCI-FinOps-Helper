@@ -95,9 +95,9 @@ main() {
     "queryType": "COST",
     "groupBy": [
         "service",
-        "compartmentPath",
-        "skuPartNumber",
-        "skuName"
+        "skuName",
+        "resourceId",
+        "compartmentPath"
     ],
     "compartmentDepth": 4
 }
