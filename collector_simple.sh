@@ -94,14 +94,10 @@ main() {
     "granularity": "DAILY",
     "queryType": "COST",
     "groupBy": [
-        "tagKey",
-        "tagValue",
         "service",
         "compartmentPath",
-        "shape",
-        "resourceId",
-        "resourceName",
-        "skuPartNumber"
+        "skuPartNumber",
+        "skuName"
     ],
     "compartmentDepth": 4
 }
@@ -134,6 +130,13 @@ try:
     # Read OCI CLI response
     with open('api_response.json', 'r') as f:
         cli_response = json.load(f)
+    
+    # Check for error response
+    if 'code' in cli_response and 'message' in cli_response:
+        print(f"❌ API Error Response:")
+        print(f"   Code: {cli_response.get('code', 'Unknown')}")
+        print(f"   Message: {cli_response.get('message', 'No message')}")
+        sys.exit(1)
     
     # Extract the actual API response data
     if 'data' in cli_response:

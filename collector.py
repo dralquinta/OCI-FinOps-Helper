@@ -50,14 +50,10 @@ def call_endpoint(tenancy_ocid, home_region, from_date, to_date):
     'granularity': 'DAILY',  
     "queryType": "COST",
     "groupBy": [   
-        "tagKey",
-        "tagValue",
         "service",
         "compartmentPath",
-        "shape",
-        "resourceId",
-        "resourceName",
         "skuPartNumber",
+        "skuName",
     ],
     "compartmentDepth": 4,
 
