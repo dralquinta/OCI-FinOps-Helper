@@ -1,5 +1,43 @@
 # cost_report
 
+## Usage: Cloud Shell (Recommended for OCI Console)
+
+Run this in OCI Cloud Shell (no config needed):
+
+```bash
+./collector_simple.sh <tenancy_ocid> <home_region> <from_date> <to_date>
+```
+
+Example:
+```bash
+./collector_simple.sh ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq us-ashburn-1 2025-11-01 2025-11-04
+```
+
+- Uses OCI CLI authentication (instance principal)
+- Works out-of-the-box in Cloud Shell
+- Produces `output.csv` and `out.json`
+
+---
+
+## Usage: Server/VM (Traditional, with config)
+
+Run this on a server or VM with Python and OCI config:
+
+```bash
+./collector.sh <tenancy_ocid> <home_region> <from_date> <to_date>
+```
+
+Example:
+```bash
+./collector.sh ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq us-ashburn-1 2025-11-01 2025-11-04
+```
+
+- Requires `~/.oci/config` and API key setup
+- Uses Python SDK for authentication
+- Produces `output.csv` and `out.json`
+
+---
+
 To excecute: 
 
 ```shell
