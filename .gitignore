@@ -10,14 +10,13 @@ venv/
 env/
 ENV/
 
-# Generated Output Files
-output_merged.csv
-instance_metadata.json
+# Generated Output Files and Directory
+output/
+*.csv
+out.json
 request_*.json
-api_response_*.json
-api_error_*.log
-compute_instances.json
-output_pre_enrichment.csv
+debug_response_*.json
+instance_metadata.json
 
 # IDE
 .vscode/
@@ -29,10 +28,3 @@ output_pre_enrichment.csv
 # OS
 .DS_Store
 Thumbs.db
-
-# Keep placeholder files in git
-!output.json
-
-*.csv
-
-out.json
