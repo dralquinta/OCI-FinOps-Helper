@@ -2,7 +2,30 @@
 
 ## Common Usage Patterns
 
-### 1. Collect Last 7 Days of Data
+### 1. Get Cost-Saving Recommendations (Fast - 3 seconds)
+
+```bash
+./collector.sh \
+  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  us-ashburn-1 \
+  $(date +%Y-%m-01) \
+  $(date +%Y-%m-%d) \
+  --only-recommendations
+```
+
+### 2. Recommendations with Custom Currency
+
+```bash
+./collector.sh \
+  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  us-ashburn-1 \
+  $(date +%Y-%m-01) \
+  $(date +%Y-%m-%d) \
+  --only-recommendations \
+  --currency EUR
+```
+
+### 3. Collect Last 7 Days of Data
 
 ```bash
 ./collector.sh \
@@ -12,7 +35,7 @@
   $(date +%Y-%m-%d)
 ```
 
-### 2. Collect Current Month Data
+### 4. Collect Current Month Data
 
 ```bash
 ./collector.sh \
@@ -22,7 +45,7 @@
   $(date +%Y-%m-%d)
 ```
 
-### 3. Collect Previous Month Data
+### 5. Collect Previous Month Data
 
 ```bash
 ./collector.sh \
@@ -30,6 +53,51 @@
   us-ashburn-1 \
   $(date -d 'last month' +%Y-%m-01) \
   $(date -d 'last month' +%Y-%m-%d)
+```
+
+### 6. Skip Stages for Testing
+
+```bash
+# Skip recommendations collection
+./collector.sh <tenancy> us-ashburn-1 2025-11-01 2025-11-20 --skip-recommendations
+
+# Skip enrichment for faster processing
+./collector.sh <tenancy> us-ashburn-1 2025-11-01 2025-11-20 --skip-enrichment
+
+# Skip cost/usage, only get recommendations
+./collector.sh <tenancy> us-ashburn-1 2025-11-01 2025-11-20 --skip-cost --skip-usage
+```
+
+## Recommendations Analysis
+
+### View Recommendations Summary
+
+```bash
+head -20 output/recommendations.out
+```
+
+### View Top Savings Opportunities
+
+```bash
+grep -A 5 "SAVINGS BY CATEGORY" output/recommendations.out | head -30
+```
+
+### Count Recommendations by Priority
+
+```bash
+grep "Priority:" output/recommendations.out | sort | uniq -c
+```
+
+### Extract All CLI Commands
+
+```bash
+grep "CLI COMMAND TO EXECUTE:" -A 1 output/recommendations.out
+```
+
+### View Only Critical Recommendations
+
+```bash
+grep -B 3 "Priority:.*CRITICAL" output/recommendations.out
 ```
 
 ## Output Analysis

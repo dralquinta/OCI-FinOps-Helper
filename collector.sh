@@ -107,24 +107,39 @@ run_collector() {
 
 # Main execution
 main() {
-    log_info "Starting OCI Cost Report Collector v2.0"
+    log_info "Starting OCI Cost Report Collector v2.1"
     
     # Validate arguments
     if [ $# -lt 4 ]; then
         log_error "Insufficient arguments"
         echo ""
-        echo "OCI Cost Report Collector v2.0"
+        echo "OCI Cost Report Collector v2.1"
         echo ""
-        echo "Usage: $0 <tenancy_ocid> <home_region> <from_date> <to_date>"
+        echo "Usage: $0 <tenancy_ocid> <home_region> <from_date> <to_date> [OPTIONS]"
         echo ""
-        echo "Arguments:"
+        echo "Required Arguments:"
         echo "  tenancy_ocid  : OCI Tenancy OCID"
         echo "  home_region   : Home region (e.g., us-ashburn-1)"
         echo "  from_date     : Start date in YYYY-MM-DD format"
         echo "  to_date       : End date in YYYY-MM-DD format"
         echo ""
-        echo "Example:"
+        echo "Optional Flags:"
+        echo "  --only-recommendations  : Fetch only recommendations (fast, skips cost/usage)"
+        echo "  --currency <CODE>       : Display currency (default: USD)"
+        echo "  --skip-cost             : Skip cost data collection"
+        echo "  --skip-usage            : Skip usage data collection"
+        echo "  --skip-enrichment       : Skip instance metadata enrichment"
+        echo "  --skip-recommendations  : Skip recommendations collection"
+        echo ""
+        echo "Examples:"
+        echo "  # Full collection"
         echo "  $0 ocid1.tenancy.oc1..aaaaa us-ashburn-1 2025-11-01 2025-11-04"
+        echo ""
+        echo "  # Get only recommendations (fast)"
+        echo "  $0 ocid1.tenancy.oc1..aaaaa us-ashburn-1 2025-11-01 2025-11-04 --only-recommendations"
+        echo ""
+        echo "  # Custom currency"
+        echo "  $0 ocid1.tenancy.oc1..aaaaa us-ashburn-1 2025-11-01 2025-11-04 --currency EUR"
         echo ""
         exit 1
     fi
@@ -148,6 +163,7 @@ main() {
         echo "   - output.csv"
         echo "   - out.json"
         echo "   - instance_metadata.json"
+        echo "   - recommendations.out"
     else
         echo ""
         echo "❌ Execution failed with exit code $exit_code"

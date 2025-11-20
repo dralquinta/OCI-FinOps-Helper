@@ -16,6 +16,7 @@ import pandas as pd
 from utils.progress import ProgressSpinner, ProgressTracker
 from utils.executor import OCIMetadataFetcher
 from utils.api_executor import OCIAPIExecutor
+from utils.recommendations import OCIRecommendationsFetcher
 
 
 class OCICostCollector:
@@ -171,8 +172,9 @@ class OCICostCollector:
         
         return df_merged
     
-    def collect(self):
-        """Main collection workflow."""
+    def collect(self, skip_cost=False, skip_usage=False, skip_enrichment=False, 
+                skip_recommendations=False, currency='USD'):
+        """Main collection workflow with optional stage control."""
         print("="*70)
         print("🚀 OCI Cost Report Collector v2.0")
         print("="*70)
@@ -180,51 +182,98 @@ class OCICostCollector:
         print(f"Region: {self.home_region}")
         print(f"From: {self.from_date}")
         print(f"To: {self.to_date}")
+        print(f"Currency: {currency}")
+        
+        # Stage control
+        if skip_cost or skip_usage:
+            print(f"\n⚠️  Running with stage control:")
+            if skip_cost:
+                print("   - Skipping COST data collection")
+            if skip_usage:
+                print("   - Skipping USAGE data collection")
+            if skip_enrichment:
+                print("   - Skipping instance metadata enrichment")
+            if skip_recommendations:
+                print("   - Skipping recommendations collection")
+        
+        data1 = None
+        data2 = None
         
         # First API call - COST query with service details
-        data1 = self.make_api_call(
-            query_type="COST",
-            group_by_fields=["service", "skuName", "resourceId", "compartmentPath"],
-            call_name="COST_API_Call"
-        )
-        
-        if data1 is None:
-            print("\n❌ Failed to retrieve cost data")
-            return False
+        if not skip_cost:
+            data1 = self.make_api_call(
+                query_type="COST",
+                group_by_fields=["service", "skuName", "resourceId", "compartmentPath"],
+                call_name="COST_API_Call"
+            )
+            
+            if data1 is None:
+                print("\n❌ Failed to retrieve cost data")
+                return False
         
         # Second API call - USAGE query with platform details
-        data2 = self.make_api_call(
-            query_type="USAGE",
-            group_by_fields=["resourceId", "platform", "region", "skuPartNumber"],
-            call_name="USAGE_API_Call"
-        )
-        
-        if data2 is None:
-            print("\n❌ Failed to retrieve usage data")
-            return False
+        if not skip_usage:
+            data2 = self.make_api_call(
+                query_type="USAGE",
+                group_by_fields=["resourceId", "platform", "region", "skuPartNumber"],
+                call_name="USAGE_API_Call"
+            )
+            
+            if data2 is None:
+                print("\n❌ Failed to retrieve usage data")
+                return False
         
         # Merge and enrich
-        try:
-            self.merge_and_enrich(data1, data2)
-            
+        if not (skip_cost or skip_usage):
+            try:
+                if skip_enrichment:
+                    print("\n⚠️  Skipping enrichment - saving basic merged data only")
+                    # Still need to do basic merge even if skipping enrichment
+                self.merge_and_enrich(data1, data2)
+            except Exception as e:
+                print(f"\n❌ Merge and enrichment failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+        
+        # Fetch cost-saving recommendations from Cloud Advisor
+        if not skip_recommendations:
             print(f"\n{'='*70}")
-            print("🎉 SUCCESS!")
+            print("🔄 Fetching Cost-Saving Recommendations")
             print(f"{'='*70}")
-            print(f"📁 Output directory: {self.output_dir.resolve()}")
-            print("\n📋 Output files:")
+            
+            recommendations_fetcher = OCIRecommendationsFetcher(
+                tenancy_ocid=self.tenancy_ocid,
+                region=self.home_region,
+                output_dir=str(self.output_dir),
+                currency=currency
+            )
+            
+            recommendations_file = recommendations_fetcher.fetch_and_save()
+            
+            if recommendations_file:
+                print(f"✅ Recommendations successfully fetched and saved")
+            else:
+                print(f"⚠️  Warning: Could not fetch recommendations (may not have Cloud Advisor access)")
+        
+        # Success summary
+        print(f"\n{'='*70}")
+        print("🎉 SUCCESS!")
+        print(f"{'='*70}")
+        print(f"📁 Output directory: {self.output_dir.resolve()}")
+        print("\n📋 Output files:")
+        if not (skip_cost or skip_usage):
             print(f"  - {self.output_dir}/output_merged.csv: Complete enriched data")
             print(f"  - {self.output_dir}/output.csv: Basic merged data (no enrichment)")
             print(f"  - {self.output_dir}/out.json: Raw API responses")
             print(f"  - {self.output_dir}/instance_metadata.json: Cached instance metadata")
+        if not skip_recommendations:
+            print(f"  - {self.output_dir}/recommendations.out: Actionable cost-saving recommendations")
+            print(f"  - {self.output_dir}/recommendations.json: Raw recommendations JSON")
+        if not (skip_cost or skip_usage):
             print(f"  - {self.output_dir}/request_*.json: API request payloads")
-            
-            return True
         
-        except Exception as e:
-            print(f"\n❌ Merge and enrichment failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+        return True
 
 
 def main():
@@ -238,6 +287,12 @@ def main():
     parser.add_argument('home_region', help='Home region (e.g., us-ashburn-1)')
     parser.add_argument('from_date', help='Start date (YYYY-MM-DD)')
     parser.add_argument('to_date', help='End date (YYYY-MM-DD)')
+    parser.add_argument('--currency', default='USD', help='Currency for recommendations (default: USD)')
+    parser.add_argument('--skip-cost', action='store_true', help='Skip cost data collection')
+    parser.add_argument('--skip-usage', action='store_true', help='Skip usage data collection')
+    parser.add_argument('--skip-enrichment', action='store_true', help='Skip instance metadata enrichment')
+    parser.add_argument('--skip-recommendations', action='store_true', help='Skip recommendations collection')
+    parser.add_argument('--only-recommendations', action='store_true', help='Only fetch recommendations (skip all other stages)')
     
     args = parser.parse_args()
     
@@ -249,7 +304,33 @@ def main():
         to_date=args.to_date
     )
     
-    success = collector.collect()
+    # Handle only-recommendations mode
+    if args.only_recommendations:
+        print("="*70)
+        print("🚀 Running in RECOMMENDATIONS-ONLY mode")
+        print("="*70)
+        recommendations_fetcher = OCIRecommendationsFetcher(
+            tenancy_ocid=args.tenancy_ocid,
+            region=args.home_region,
+            output_dir=str(collector.output_dir),
+            currency=args.currency
+        )
+        recommendations_file = recommendations_fetcher.fetch_and_save()
+        if recommendations_file:
+            print("\n✅ Recommendations fetched successfully!")
+            sys.exit(0)
+        else:
+            print("\n❌ Failed to fetch recommendations")
+            sys.exit(1)
+    
+    # Pass skip flags to collect method
+    success = collector.collect(
+        skip_cost=args.skip_cost,
+        skip_usage=args.skip_usage,
+        skip_enrichment=args.skip_enrichment,
+        skip_recommendations=args.skip_recommendations,
+        currency=args.currency
+    )
     sys.exit(0 if success else 1)
 
 

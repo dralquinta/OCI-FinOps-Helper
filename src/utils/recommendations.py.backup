@@ -1,0 +1,196 @@
+"""
+Oracle Cloud Advisor Recommendations fetcher.
+Fetches cost-saving recommendations from the Cloud Advisor API.
+Copyright (c) 2025 Oracle and/or its affiliates.
+"""
+
+import json
+import subprocess
+from pathlib import Path
+from datetime import datetime
+from .progress import ProgressSpinner
+
+
+class OCIRecommendationsFetcher:
+    """Fetch cost-saving recommendations from Oracle Cloud Advisor API."""
+    
+    def __init__(self, tenancy_ocid, region, output_dir='output'):
+        """
+        Initialize recommendations fetcher.
+        
+        Args:
+            tenancy_ocid: OCI Tenancy OCID
+            region: OCI Region
+            output_dir: Output directory for recommendations
+        """
+        self.tenancy_ocid = tenancy_ocid
+        self.region = region
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Cloud Advisor API endpoint
+        self.api_endpoint = f"https://optimizer.{region}.oraclecloud.com/20200630/recommendations"
+    
+    def fetch_recommendations(self):
+        """
+        Fetch all recommendations from Cloud Advisor API.
+        
+        Returns:
+            dict: Recommendations data or None if failed
+        """
+        print(f"\n{'='*70}")
+        print("💡 Fetching Cost-Saving Recommendations")
+        print(f"{'='*70}")
+        print(f"Endpoint: {self.api_endpoint}")
+        print(f"Tenancy: {self.tenancy_ocid}")
+        
+        spinner = ProgressSpinner("🌐 Contacting Oracle Cloud Advisor API...")
+        spinner.start()
+        
+        try:
+            # Execute OCI CLI to fetch recommendations
+            result = subprocess.run(
+                [
+                    'oci', 'optimizer', 'recommendation-summary', 'list',
+                    '--compartment-id', self.tenancy_ocid,
+                    '--compartment-id-in-subtree', 'true',
+                    '--region', self.region,
+                    '--all',
+                    '--output', 'json'
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            spinner.stop()
+            
+            if result.returncode != 0:
+                print(f"❌ Failed to fetch recommendations: {result.stderr}")
+                print(f"\n📋 Debug information:")
+                print(f"   Return code: {result.returncode}")
+                print(f"   Stderr: {result.stderr[:500]}")
+                return None
+            
+            # Parse response
+            response = json.loads(result.stdout)
+            
+            # Extract recommendations from data field
+            recommendations_data = response.get('data', response)
+            
+            if isinstance(recommendations_data, dict) and 'items' in recommendations_data:
+                items = recommendations_data['items']
+                print(f"✅ Success: Retrieved {len(items)} recommendations")
+                
+                # Categorize recommendations by status
+                active = [r for r in items if r.get('lifecycleState') == 'ACTIVE']
+                dismissed = [r for r in items if r.get('lifecycleState') == 'DISMISSED']
+                implemented = [r for r in items if r.get('lifecycleState') == 'IMPLEMENTED']
+                
+                print(f"\n📊 Recommendations Summary:")
+                print(f"  - Active: {len(active)}")
+                print(f"  - Dismissed: {len(dismissed)}")
+                print(f"  - Implemented: {len(implemented)}")
+                
+                # Extract and display by category
+                categories = {}
+                estimated_savings = 0
+                
+                for item in items:
+                    category = item.get('category', 'UNKNOWN')
+                    if category not in categories:
+                        categories[category] = 0
+                    categories[category] += 1
+                    
+                    # Sum estimated monthly savings (if available)
+                    if item.get('estimatedCostSaving'):
+                        try:
+                            savings = float(item.get('estimatedCostSaving', 0))
+                            estimated_savings += savings
+                        except (ValueError, TypeError):
+                            pass
+                
+                print(f"\n📈 Recommendations by Category:")
+                for cat, count in sorted(categories.items()):
+                    print(f"  - {cat}: {count}")
+                
+                if estimated_savings > 0:
+                    print(f"\n💰 Estimated Monthly Savings: ${estimated_savings:,.2f}")
+                
+                return recommendations_data
+            
+            # Handle alternative response format
+            if isinstance(recommendations_data, list):
+                print(f"✅ Success: Retrieved {len(recommendations_data)} recommendations (list format)")
+                return {"items": recommendations_data}
+            
+            print("❌ Unexpected API response format")
+            print(f"\n📋 Response details:")
+            print(f"   Response type: {type(recommendations_data)}")
+            if isinstance(recommendations_data, dict):
+                print(f"   Response keys: {list(recommendations_data.keys())}")
+            
+            # Save response for investigation
+            debug_file = self.output_dir / Path("debug_recommendations_response.json")
+            with open(debug_file, 'w') as f:
+                json.dump(response, f, indent=2)
+            print(f"   📁 Full response saved to: {debug_file}")
+            
+            return None
+        
+        except subprocess.TimeoutExpired:
+            spinner.stop()
+            print("❌ API call timeout after 300 seconds")
+            print("   The API took longer than 300 seconds to respond")
+            return None
+        
+        except json.JSONDecodeError as json_err:
+            spinner.stop()
+            print(f"❌ Failed to parse API response as JSON: {json_err}")
+            if result:
+                print(f"   Raw response (first 500 chars): {result.stdout[:500]}")
+            return None
+        
+        except Exception as e:
+            spinner.stop()
+            print(f"❌ Failed to fetch recommendations: {e}")
+            print(f"\n📋 Debug information:")
+            print(f"   Exception type: {type(e).__name__}")
+            print(f"   Exception message: {str(e)}")
+            return None
+    
+    def save_recommendations(self, recommendations_data):
+        """
+        Save recommendations to file.
+        
+        Args:
+            recommendations_data: Recommendations data dictionary
+        
+        Returns:
+            Path to saved file or None if failed
+        """
+        if not recommendations_data:
+            return None
+        
+        try:
+            output_file = self.output_dir / 'recommendations.out'
+            with open(output_file, 'w') as f:
+                json.dump(recommendations_data, f, indent=2)
+            
+            print(f"✅ Recommendations saved to {output_file}")
+            return output_file
+        
+        except Exception as e:
+            print(f"❌ Failed to save recommendations: {e}")
+            return None
+    
+    def fetch_and_save(self):
+        """
+        Fetch recommendations and save to file.
+        
+        Returns:
+            Path to saved file or None if failed
+        """
+        recommendations = self.fetch_recommendations()
+        if recommendations:
+            return self.save_recommendations(recommendations)
+        return None
