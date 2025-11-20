@@ -81,9 +81,14 @@ setup_venv() {
     # Upgrade pip silently
     pip install --upgrade pip --quiet
     
-    # Install required packages
+    # Install required packages from requirements.txt
     log_info "Installing Python dependencies..."
-    pip install pandas requests --quiet
+    if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+        pip install -r "$SCRIPT_DIR/requirements.txt" --quiet
+    else
+        log_warning "⚠️  requirements.txt not found, installing core dependencies only"
+        pip install pandas requests --quiet
+    fi
     
     if [ $? -eq 0 ]; then
         log_success "✅ Python dependencies installed"
