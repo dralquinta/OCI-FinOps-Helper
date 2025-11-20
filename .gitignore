@@ -28,3 +28,5 @@ instance_metadata.json
 # OS
 .DS_Store
 Thumbs.db
+
+customer_files
