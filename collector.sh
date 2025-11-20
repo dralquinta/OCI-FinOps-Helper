@@ -10,14 +10,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv"
 PYTHON_SCRIPT="$SCRIPT_DIR/src/collector.py"
 
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to log with timestamp and color
+log() {
+    local color=$1
+    local message=$2
+    echo -e "${color}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $message"
+}
+
+log_info() {
+    log "$BLUE" "$1"
+}
+
+log_success() {
+    log "$GREEN" "$1"
+}
+
+log_error() {
+    log "$RED" "$1"
+}
+
+log_warning() {
+    log "$YELLOW" "$1"
+}
+
+log_action() {
+    log "$CYAN" "$1"
+}
+
 # Function to detect and verify OCI CLI authentication
 check_oci_auth() {
-    echo "============== Checking OCI Authentication =============="
+    log_action "============== Checking OCI Authentication =============="
     if oci iam region list --output table >/dev/null 2>&1; then
-        echo "✅ OCI CLI authentication working"
+        log_success "✅ OCI CLI authentication working"
         return 0
     else
-        echo "❌ OCI CLI authentication failed"
+        log_error "❌ OCI CLI authentication failed"
         echo ""
         echo "Please ensure you have:"
         echo "  1. OCI CLI installed"
@@ -29,15 +64,15 @@ check_oci_auth() {
 
 # Function to setup Python virtual environment
 setup_venv() {
-    echo ""
-    echo "============== Setting Up Python Environment =============="
+    log_action ""
+    log_action "============== Setting Up Python Environment =============="
     
     if [ -d "$VENV_DIR" ]; then
-        echo "✅ Virtual environment already exists"
+        log_success "✅ Virtual environment already exists"
     else
-        echo "Creating virtual environment..."
+        log_info "Creating virtual environment..."
         python3 -m venv "$VENV_DIR"
-        echo "✅ Virtual environment created"
+        log_success "✅ Virtual environment created"
     fi
     
     # Activate virtual environment
@@ -47,21 +82,21 @@ setup_venv() {
     pip install --upgrade pip --quiet
     
     # Install required packages
-    echo "Installing Python dependencies..."
+    log_info "Installing Python dependencies..."
     pip install pandas requests --quiet
     
     if [ $? -eq 0 ]; then
-        echo "✅ Python dependencies installed"
+        log_success "✅ Python dependencies installed"
     else
-        echo "❌ Failed to install Python dependencies"
+        log_error "❌ Failed to install Python dependencies"
         return 1
     fi
 }
 
 # Function to run the Python collector
 run_collector() {
-    echo ""
-    echo "============== Running Collector =============="
+    log_action ""
+    log_action "============== Running Collector =============="
     
     # Activate venv and run Python script
     source "$VENV_DIR/bin/activate"
@@ -72,8 +107,12 @@ run_collector() {
 
 # Main execution
 main() {
+    log_info "Starting OCI Cost Report Collector v2.0"
+    
     # Validate arguments
     if [ $# -lt 4 ]; then
+        log_error "Insufficient arguments"
+        echo ""
         echo "OCI Cost Report Collector v2.0"
         echo ""
         echo "Usage: $0 <tenancy_ocid> <home_region> <from_date> <to_date>"

@@ -13,148 +13,52 @@ import argparse
 from pathlib import Path
 import pandas as pd
 
+from utils.progress import ProgressSpinner, ProgressTracker
+from utils.executor import OCIMetadataFetcher
+from utils.api_executor import OCIAPIExecutor
+
 
 class OCICostCollector:
     """Collects cost and usage data from OCI and enriches with instance metadata."""
     
-    def __init__(self, tenancy_ocid, home_region, from_date, to_date):
+    def __init__(self, tenancy_ocid, home_region, from_date, to_date, output_dir='output'):
         self.tenancy_ocid = tenancy_ocid
         self.home_region = home_region
         self.from_date = from_date
         self.to_date = to_date
         self.api_endpoint = f"https://usageapi.{home_region}.oci.oraclecloud.com/20200107/usage"
+        
+        # Create output directory if it doesn't exist
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def make_api_call(self, query_type, group_by_fields, call_name):
         """Make an API call to OCI Usage API."""
-        print(f"\n{'='*70}")
-        print(f"Making {call_name}")
-        print(f"{'='*70}")
+        api_executor = OCIAPIExecutor(
+            self.tenancy_ocid,
+            self.home_region,
+            output_dir=self.output_dir
+        )
         
-        # Build request body
-        request_body = {
-            "tenantId": self.tenancy_ocid,
-            "timeUsageStarted": f"{self.from_date}T00:00:00Z",
-            "timeUsageEnded": f"{self.to_date}T00:00:00Z",
-            "granularity": "DAILY",
-            "queryType": query_type,
-            "groupBy": group_by_fields,
-            "compartmentDepth": 4
-        }
-        
-        # Save request body to temp file
-        request_file = Path(f"request_{call_name}.json")
-        with open(request_file, 'w') as f:
-            json.dump(request_body, f, indent=2)
-        
-        # Execute OCI CLI raw-request
-        try:
-            result = subprocess.run(
-                [
-                    'oci', 'raw-request',
-                    '--http-method', 'POST',
-                    '--target-uri', self.api_endpoint,
-                    '--request-body', f'file://{request_file}',
-                    '--output', 'json'
-                ],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            
-            # Clean up temp file
-            request_file.unlink()
-            
-            if result.returncode != 0:
-                print(f"❌ API call failed: {result.stderr}")
-                return None
-            
-            # Parse response
-            response = json.loads(result.stdout)
-            
-            # Check for API errors
-            if 'code' in response and 'message' in response:
-                print(f"❌ API Error: {response.get('message')}")
-                return None
-            
-            # Extract data
-            api_data = response.get('data', response)
-            
-            if isinstance(api_data, dict) and 'items' in api_data:
-                print(f"✅ Success: Retrieved {len(api_data['items'])} records")
-                return api_data
-            else:
-                print(f"❌ Unexpected API response format")
-                return None
-        
-        except subprocess.TimeoutExpired:
-            print(f"❌ API call timeout after 300 seconds")
-            return None
-        except Exception as e:
-            print(f"❌ API call failed: {e}")
-            return None
+        return api_executor.make_api_call(
+            query_type=query_type,
+            group_by_fields=group_by_fields,
+            call_name=call_name,
+            from_date=self.from_date,
+            to_date=self.to_date
+        )
     
     def fetch_instance_metadata(self, instance_ids):
-        """Fetch compute instance metadata using OCI CLI."""
+        """Fetch compute instance metadata using multi-threaded OCI CLI calls."""
         print(f"\n{'='*70}")
-        print(f"Fetching Compute Instance Metadata")
+        print("🔄 Fetching Compute Instance Metadata")
         print(f"{'='*70}")
         print(f"Total instances to query: {len(instance_ids)}")
+        print(f"Using multi-threaded executor for faster processing...\n")
         
-        instance_metadata = {}
-        successful = 0
-        failed = 0
-        
-        for idx, instance_id in enumerate(instance_ids, 1):
-            # Extract region from OCID (format: ocid1.instance.oc1.<region>.<unique_id>)
-            parts = instance_id.split('.')
-            if len(parts) < 4:
-                print(f"⚠️  Cannot parse region from {instance_id}")
-                failed += 1
-                continue
-            
-            region = parts[3]
-            
-            # Show progress
-            if idx % 10 == 0 or idx == 1:
-                print(f"  Progress: {idx}/{len(instance_ids)} instances...")
-            
-            try:
-                # Call OCI CLI to get instance details
-                result = subprocess.run(
-                    [
-                        'oci', 'compute', 'instance', 'get',
-                        '--instance-id', instance_id,
-                        '--region', region,
-                        '--output', 'json'
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if result.returncode == 0:
-                    instance_data = json.loads(result.stdout)
-                    if 'data' in instance_data:
-                        data = instance_data['data']
-                        instance_metadata[instance_id] = {
-                            'shape': data.get('shape', ''),
-                            'resourceName': data.get('display-name', '')
-                        }
-                        successful += 1
-                    else:
-                        failed += 1
-                else:
-                    # Instance might be terminated or inaccessible
-                    failed += 1
-            
-            except subprocess.TimeoutExpired:
-                failed += 1
-            except Exception as e:
-                failed += 1
-            
-            # Small delay to avoid rate limiting
-            if idx % 10 == 0:
-                time.sleep(0.5)
+        # Use OCIMetadataFetcher for parallel processing with built-in progress tracking
+        fetcher = OCIMetadataFetcher(max_workers=10)
+        instance_metadata, successful, failed = fetcher.fetch_metadata(instance_ids)
         
         print(f"\n✅ Successfully fetched {successful} instance metadata")
         if failed > 0:
@@ -165,14 +69,19 @@ class OCICostCollector:
     def merge_and_enrich(self, data1, data2):
         """Merge two API responses and enrich with instance metadata."""
         print(f"\n{'='*70}")
-        print(f"Merging and Enriching Data")
+        print(f"🔄 Merging and Enriching Data")
         print(f"{'='*70}")
+        
+        # Create spinner for merge operation
+        spinner = ProgressSpinner("Saving and processing data...")
+        spinner.start()
         
         # Save raw responses
         raw_output = {'call1': data1, 'call2': data2}
-        with open('out.json', 'w') as f:
+        out_file = self.output_dir / 'out.json'
+        with open(out_file, 'w') as f:
             json.dump(raw_output, f, indent=2)
-        print("✅ Raw JSON saved to out.json")
+        print(f"✅ Raw JSON saved to {out_file}")
         
         # Convert to DataFrames
         df1 = pd.DataFrame(data1['items'])
@@ -203,13 +112,16 @@ class OCICostCollector:
         print(f"✅ Merged dataset: {len(df_merged)} records with {len(df_merged.columns)} columns")
         
         # Save basic merged CSV
-        df_merged.to_csv('output.csv', index=False)
-        print(f"✅ Basic merged CSV saved to output.csv")
+        output_csv = self.output_dir / 'output.csv'
+        df_merged.to_csv(output_csv, index=False)
+        print(f"✅ Basic merged CSV saved to {output_csv}")
         
         # Extract compute instance IDs
         compute_instances = df_merged[
             df_merged['resourceId'].str.contains('instance.oc1', na=False, case=False)
         ]['resourceId'].unique().tolist()
+        
+        spinner.stop()
         
         print(f"\n📊 Found {len(compute_instances)} unique compute instances")
         
@@ -218,12 +130,15 @@ class OCICostCollector:
             instance_metadata = self.fetch_instance_metadata(compute_instances)
             
             # Save metadata cache
-            with open('instance_metadata.json', 'w') as f:
+            metadata_file = self.output_dir / 'instance_metadata.json'
+            with open(metadata_file, 'w') as f:
                 json.dump(instance_metadata, f, indent=2)
-            print(f"✅ Instance metadata cached to instance_metadata.json")
+            print(f"✅ Instance metadata cached to {metadata_file}")
             
             # Enrich dataframe
-            print(f"\nEnriching data with instance metadata...")
+            print(f"\n🔄 Enriching data with instance metadata...")
+            spinner2 = ProgressSpinner("Processing enrichment...")
+            spinner2.start()
             
             def enrich_row(row):
                 resource_id = row.get('resourceId', '')
@@ -236,6 +151,7 @@ class OCICostCollector:
                 return row
             
             df_merged = df_merged.apply(enrich_row, axis=1)
+            spinner2.stop()
             
             # Count enriched records
             enriched_shape = df_merged['shape'].notna().sum()
@@ -249,15 +165,16 @@ class OCICostCollector:
             print("⚠️  No compute instances found, skipping metadata enrichment")
         
         # Save final enriched CSV
-        df_merged.to_csv('output_merged.csv', index=False)
-        print(f"✅ Final enriched CSV saved to output_merged.csv")
+        output_merged = self.output_dir / 'output_merged.csv'
+        df_merged.to_csv(output_merged, index=False)
+        print(f"✅ Final enriched CSV saved to {output_merged}")
         
         return df_merged
     
     def collect(self):
         """Main collection workflow."""
         print("="*70)
-        print("OCI Cost Report Collector v2.0")
+        print("🚀 OCI Cost Report Collector v2.0")
         print("="*70)
         print(f"Tenancy: {self.tenancy_ocid}")
         print(f"Region: {self.home_region}")
@@ -288,16 +205,18 @@ class OCICostCollector:
         
         # Merge and enrich
         try:
-            df_final = self.merge_and_enrich(data1, data2)
+            self.merge_and_enrich(data1, data2)
             
             print(f"\n{'='*70}")
-            print("SUCCESS!")
+            print("🎉 SUCCESS!")
             print(f"{'='*70}")
-            print("📁 Output files:")
-            print("  - output_merged.csv: Complete enriched data")
-            print("  - output.csv: Basic merged data (no enrichment)")
-            print("  - out.json: Raw API responses")
-            print("  - instance_metadata.json: Cached instance metadata")
+            print(f"📁 Output directory: {self.output_dir.resolve()}")
+            print("\n📋 Output files:")
+            print(f"  - {self.output_dir}/output_merged.csv: Complete enriched data")
+            print(f"  - {self.output_dir}/output.csv: Basic merged data (no enrichment)")
+            print(f"  - {self.output_dir}/out.json: Raw API responses")
+            print(f"  - {self.output_dir}/instance_metadata.json: Cached instance metadata")
+            print(f"  - {self.output_dir}/request_*.json: API request payloads")
             
             return True
         
