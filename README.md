@@ -1,4 +1,4 @@
-# OCI Cost Report Collector v2.0
+# OCI FinOps Helper
 
 A Python-based tool to collect, merge, and enrich Oracle Cloud Infrastructure (OCI) cost and usage data with compute instance metadata.
 
