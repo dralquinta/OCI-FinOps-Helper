@@ -17,6 +17,7 @@ from utils.progress import ProgressSpinner, ProgressTracker
 from utils.executor import OCIMetadataFetcher
 from utils.api_executor import OCIAPIExecutor
 from utils.recommendations import OCIRecommendationsFetcher
+from utils.growth_collector import OCIGrowthCollector
 
 
 class OCICostCollector:
@@ -58,7 +59,7 @@ class OCICostCollector:
         print(f"Using multi-threaded executor for faster processing...\n")
         
         # Use OCIMetadataFetcher for parallel processing with built-in progress tracking
-        fetcher = OCIMetadataFetcher(max_workers=10)
+        fetcher = OCIMetadataFetcher(max_workers=30)
         instance_metadata, successful, failed = fetcher.fetch_metadata(instance_ids)
         
         print(f"\n✅ Successfully fetched {successful} instance metadata")
@@ -172,8 +173,40 @@ class OCICostCollector:
         
         return df_merged
     
+    def enrich_with_growth_data(self, df_merged, growth_results):
+        """
+        Enrich the merged cost/usage dataframe with growth collection data.
+        
+        Args:
+            df_merged: Merged dataframe from cost/usage collection
+            growth_results: Results from growth collection
+            
+        Returns:
+            Enhanced dataframe with tag information
+        """
+        if not growth_results or 'growth_collector' not in growth_results:
+            print("⚠️  No growth data available for enrichment")
+            return df_merged
+        
+        print(f"\n{'='*70}")
+        print("🌱 Enriching with Growth Collection Data")
+        print(f"{'='*70}")
+        
+        growth_collector = growth_results['growth_collector']
+        
+        # Enrich with tag data
+        if hasattr(growth_collector, 'enrich_dataframe_with_tags'):
+            df_merged = growth_collector.enrich_dataframe_with_tags(df_merged)
+            
+            # Save enhanced version with tags
+            output_with_tags = self.output_dir / 'output_with_tags.csv'
+            df_merged.to_csv(output_with_tags, index=False)
+            print(f"✅ Enhanced CSV with tags saved to {output_with_tags}")
+        
+        return df_merged
+    
     def collect(self, skip_cost=False, skip_usage=False, skip_enrichment=False, 
-                skip_recommendations=False, currency='USD'):
+                skip_recommendations=False, growth_collection=False, currency='USD'):
         """Main collection workflow with optional stage control."""
         print("="*70)
         print("🚀 OCI Cost Report Collector v2.0")
@@ -185,7 +218,7 @@ class OCICostCollector:
         print(f"Currency: {currency}")
         
         # Stage control
-        if skip_cost or skip_usage:
+        if skip_cost or skip_usage or skip_enrichment or skip_recommendations or growth_collection:
             print(f"\n⚠️  Running with stage control:")
             if skip_cost:
                 print("   - Skipping COST data collection")
@@ -195,9 +228,14 @@ class OCICostCollector:
                 print("   - Skipping instance metadata enrichment")
             if skip_recommendations:
                 print("   - Skipping recommendations collection")
+            if growth_collection:
+                print("   + GROWTH COLLECTION ADD-ON (tag enrichment)")
+        
+        growth_collector_obj = None
         
         data1 = None
         data2 = None
+        df_merged = None
         
         # First API call - COST query with service details
         if not skip_cost:
@@ -229,7 +267,45 @@ class OCICostCollector:
                 if skip_enrichment:
                     print("\n⚠️  Skipping enrichment - saving basic merged data only")
                     # Still need to do basic merge even if skipping enrichment
-                self.merge_and_enrich(data1, data2)
+                df_merged = self.merge_and_enrich(data1, data2)
+                
+                # Enrich with growth collection tag data if flag is enabled
+                if growth_collection and df_merged is not None:
+                    print(f"\n{'='*70}")
+                    print("🌱 Running Growth Collection - Tag Analysis")
+                    print(f"{'='*70}")
+                    
+                    growth_collector_obj = OCIGrowthCollector(
+                        tenancy_ocid=self.tenancy_ocid,
+                        home_region=self.home_region,
+                        output_dir=str(self.output_dir)
+                    )
+                    
+                    try:
+                        # Collect tag data
+                        growth_collector_obj.collect_all(
+                            from_date=self.from_date,
+                            to_date=self.to_date
+                        )
+                        
+                        # Enrich the merged dataframe with tag information
+                        print(f"\n{'='*70}")
+                        print("🔄 Enriching cost/usage data with tag information")
+                        print(f"{'='*70}")
+                        
+                        df_merged = growth_collector_obj.enrich_dataframe_with_tags(df_merged)
+                        
+                        # Re-save the enriched dataframe to output_merged.csv
+                        output_merged = self.output_dir / 'output_merged.csv'
+                        df_merged.to_csv(output_merged, index=False)
+                        print(f"✅ Tag-enriched data saved to {output_merged}")
+                        
+                    except Exception as e:
+                        print(f"\n⚠️  Warning: Growth collection/enrichment failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        print("Continuing with unenriched data...")
+                    
             except Exception as e:
                 print(f"\n❌ Merge and enrichment failed: {e}")
                 import traceback
@@ -263,13 +339,19 @@ class OCICostCollector:
         print(f"📁 Output directory: {self.output_dir.resolve()}")
         print("\n📋 Output files:")
         if not (skip_cost or skip_usage):
-            print(f"  - {self.output_dir}/output_merged.csv: Complete enriched data")
+            if growth_collection:
+                print(f"  - {self.output_dir}/output_merged.csv: Complete data enriched with tags")
+            else:
+                print(f"  - {self.output_dir}/output_merged.csv: Complete enriched data")
             print(f"  - {self.output_dir}/output.csv: Basic merged data (no enrichment)")
             print(f"  - {self.output_dir}/out.json: Raw API responses")
             print(f"  - {self.output_dir}/instance_metadata.json: Cached instance metadata")
         if not skip_recommendations:
             print(f"  - {self.output_dir}/recommendations.out: Actionable cost-saving recommendations")
             print(f"  - {self.output_dir}/recommendations.json: Raw recommendations JSON")
+        if growth_collection and not (skip_cost or skip_usage):
+            print(f"  - {self.output_dir}/growth_collection_tags.json: Complete tag analysis data")
+            print(f"  - {self.output_dir}/growth_collection_summary.txt: Tag analysis summary")
         if not (skip_cost or skip_usage):
             print(f"  - {self.output_dir}/request_*.json: API request payloads")
         
@@ -293,8 +375,33 @@ def main():
     parser.add_argument('--skip-enrichment', action='store_true', help='Skip instance metadata enrichment')
     parser.add_argument('--skip-recommendations', action='store_true', help='Skip recommendations collection')
     parser.add_argument('--only-recommendations', action='store_true', help='Only fetch recommendations (skip all other stages)')
+    parser.add_argument('--growth-collection', action='store_true', 
+                        help='Collect growth-related data (tag namespaces, definitions, defaults, cost-tracking tags)')
+    parser.add_argument('--only-growth', action='store_true', 
+                        help='Only run growth collection (skip cost/usage data collection)')
     
     args = parser.parse_args()
+    
+    # Handle only-growth mode
+    if args.only_growth:
+        print("="*70)
+        print("🚀 Running in GROWTH-ONLY mode")
+        print("="*70)
+        collector = OCICostCollector(
+            tenancy_ocid=args.tenancy_ocid,
+            home_region=args.home_region,
+            from_date=args.from_date,
+            to_date=args.to_date
+        )
+        success = collector.collect(
+            skip_cost=True,
+            skip_usage=True,
+            skip_enrichment=True,
+            skip_recommendations=True,
+            growth_collection=True,
+            currency=args.currency
+        )
+        sys.exit(0 if success else 1)
     
     # Create collector and run
     collector = OCICostCollector(
@@ -329,6 +436,7 @@ def main():
         skip_usage=args.skip_usage,
         skip_enrichment=args.skip_enrichment,
         skip_recommendations=args.skip_recommendations,
+        growth_collection=args.growth_collection,
         currency=args.currency
     )
     sys.exit(0 if success else 1)
