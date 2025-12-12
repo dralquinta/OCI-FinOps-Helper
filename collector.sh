@@ -2,7 +2,7 @@
 # Copyright (c) 2022 Oracle and/or its affiliates.
 # All rights reserved. The Universal Permissive License (UPL), Version 1.0
 
-# OCI Cost Report Collector v2.0 - Bash Wrapper
+# OCI Cost Report Collector v2.2.1 - Bash Wrapper
 
 set -e
 

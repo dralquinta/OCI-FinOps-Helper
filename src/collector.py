@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OCI Cost Report Collector v2.0
+OCI Cost Report Collector v2.2.1
 Copyright (c) 2025 Oracle and/or its affiliates.
 All rights reserved. The Universal Permissive License (UPL), Version 1.0
 """
@@ -209,7 +209,7 @@ class OCICostCollector:
                 skip_recommendations=False, growth_collection=False, currency='USD'):
         """Main collection workflow with optional stage control."""
         print("="*70)
-        print("🚀 OCI Cost Report Collector v2.0")
+        print("🚀 OCI Cost Report Collector v2.2.1")
         print("="*70)
         print(f"Tenancy: {self.tenancy_ocid}")
         print(f"Region: {self.home_region}")
@@ -361,7 +361,7 @@ class OCICostCollector:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='OCI Cost Report Collector v2.0',
+        description='OCI Cost Report Collector v2.2.1',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
