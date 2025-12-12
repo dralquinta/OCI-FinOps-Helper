@@ -112,13 +112,13 @@ run_collector() {
 
 # Main execution
 main() {
-    log_info "Starting OCI Cost Report Collector v2.1"
+    log_info "Starting OCI Cost Report Collector v2.2.1"
     
     # Validate arguments
     if [ $# -lt 4 ]; then
         log_error "Insufficient arguments"
         echo ""
-        echo "OCI Cost Report Collector v2.1"
+        echo "OCI Cost Report Collector v2.2.1"
         echo ""
         echo "Usage: $0 <tenancy_ocid> <home_region> <from_date> <to_date> [OPTIONS]"
         echo ""
