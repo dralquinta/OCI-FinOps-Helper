@@ -68,10 +68,29 @@ class OCIRecommendationsFetcher:
             spinner.stop()
             
             if result.returncode != 0:
-                print(f"❌ API call failed: {result.stderr}")
+                # Check if it's an authorization error
+                is_auth_error = 'NotAuthorizedOrNotFound' in result.stderr or 'Authorization failed' in result.stderr
+                
+                print(f"❌ API call failed: {result.stderr[:50]}...")
                 print("\n📋 Debug information:")
                 print(f"   Return code: {result.returncode}")
-                print(f"   Stderr: {result.stderr[:500]}")
+                print(f"   Region: {self.region}")
+                print(f"   Tenancy: {self.tenancy_ocid[:50]}...")
+                
+                if is_auth_error:
+                    print("\n💡 Troubleshooting steps:")
+                    print("   1. Verify IAM policy grants access to Cloud Advisor:")
+                    print("      allow group <YourGroup> to read cloud-advisor-family in tenancy")
+                    print("   2. Confirm the region is subscribed and Cloud Advisor is available")
+                    print("   3. Check that you have proper permissions in the tenancy")
+                    print("   4. Verify your OCI CLI session is authenticated:")
+                    print("      oci session validate --auth security_token")
+                    print("\n   Required IAM Policy:")
+                    print("   allow group <YourGroup> to read cloud-advisor-family in tenancy")
+                    print("   allow group <YourGroup> to manage optimizer-api-family in tenancy")
+                
+                print(f"\n   Full error output (first 500 chars):")
+                print(f"   {result.stderr[:500]}")
                 return None
             
             # Parse response
