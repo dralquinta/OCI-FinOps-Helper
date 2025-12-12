@@ -93,18 +93,35 @@ class OCIAPIExecutor:
             
             # Check for API errors in the data section
             if isinstance(api_data, dict) and 'code' in api_data and 'message' in api_data:
-                print(f"❌ API Error: {api_data.get('message')}")
-                print(f"\n📋 Error details for debugging:")
-                print(f"   Error code: {api_data.get('code')}")
-                print(f"   Error message: {api_data.get('message')}")
+                error_code = api_data.get('code')
+                error_message = api_data.get('message')
+                
+                print(f"❌ API Error: {error_message}")
+                print(f"\n📋 Error details:")
+                print(f"   Error code: {error_code}")
+                print(f"   Region: {self.home_region}")
+                print(f"   Tenancy: {self.tenancy_ocid[:50]}...")
+                
+                # Provide specific guidance based on error code
+                if error_code == 'NotAuthorizedOrNotFound':
+                    print(f"\n💡 Troubleshooting steps:")
+                    print(f"   1. Verify IAM policy grants access to cost and usage data:")
+                    print(f"      allow group <YourGroup> to read usage-reports in tenancy")
+                    print(f"      allow group <YourGroup> to read usage-budgets in tenancy")
+                    print(f"   2. Confirm the tenancy OCID is correct")
+                    print(f"   3. Check that the region '{self.home_region}' is subscribed")
+                    print(f"   4. Ensure you're using the home region for the tenancy")
+                    print(f"   5. Verify your OCI CLI session is authenticated:")
+                    print(f"      oci iam region list --auth security_token")
+                
                 if 'details' in api_data:
-                    print(f"   Details: {api_data.get('details')}")
+                    print(f"   Additional details: {api_data.get('details')}")
                 
                 # Save error response for investigation
                 debug_file = self.output_dir / Path(f"debug_error_{call_name}.json")
                 with open(debug_file, 'w') as f:
                     json.dump(response, f, indent=2)
-                print(f"   📁 Full error response saved to: {debug_file}")
+                print(f"\n   📁 Full error response saved to: {debug_file}")
                 
                 return None
             
