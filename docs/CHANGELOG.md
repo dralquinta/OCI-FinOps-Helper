@@ -1,5 +1,79 @@
 # Changelog
 
+## Version 2.1 (December 2025)
+
+### New Feature: Growth Collection - Tag Analysis
+
+#### Overview
+Added comprehensive tag analysis capabilities to help understand tagging structure, cost allocation, and growth patterns across your OCI tenancy.
+
+#### What's New
+- **`--growth-collection` flag**: Collect tag-related data alongside regular cost/usage collection
+- **`--only-growth` flag**: Run only tag analysis (skip cost/usage data)
+- **New utility module**: `src/utils/growth_collector.py` with `OCIGrowthCollector` class
+- **Comprehensive documentation**: `docs/GROWTH_COLLECTION.md` and `docs/GROWTH_COLLECTION_QUICK_REFERENCE.md`
+
+#### Data Points Collected
+1. **Tag Namespaces**: Top-level tag containers (via `oci iam tag-namespace list`)
+2. **Tag Definitions**: Individual tags per namespace (via `oci iam tag list`)
+3. **Tag Defaults**: Auto-tagging rules across compartments (via `oci iam tag-default list`)
+4. **Resource Tags**: Tags applied to resources via Usage API
+5. **Cost-Tracking Tags**: Cost breakdown by tag combinations via Usage API
+
+#### New CLI Commands
+```bash
+# Growth collection only
+./collector.sh <tenancy> <region> <from> <to> --only-growth
+
+# Full collection with growth data
+./collector.sh <tenancy> <region> <from> <to> --growth-collection
+```
+
+#### New Output Files
+- `growth_collection_tags.json`: Complete JSON with all tag data
+- `growth_collection_summary.txt`: Human-readable summary report
+
+#### Use Cases
+- **Cost Allocation**: Identify which tags drive the most cost
+- **Chargeback**: Tag-based cost breakdown for departments/projects
+- **Compliance Audits**: Ensure resources are properly tagged
+- **Governance**: Review and validate auto-tagging rules
+- **Trend Analysis**: Track tagging patterns over time
+
+#### Performance
+- Typical runtime: 2-5 minutes for a standard tenancy
+- Multi-threaded processing for tag definitions
+- Progress tracking for long-running operations
+- Output files: 1-10 MB depending on tenancy size
+
+#### Architecture Changes
+```
+src/
+├── collector.py (enhanced with growth collection integration)
+└── utils/
+    ├── growth_collector.py (NEW)
+    ├── api_executor.py
+    ├── executor.py
+    ├── progress.py
+    ├── recommendations.py
+    └── __init__.py
+
+docs/
+├── GROWTH_COLLECTION.md (NEW - comprehensive guide)
+├── GROWTH_COLLECTION_QUICK_REFERENCE.md (NEW - quick reference)
+├── ARCHITECTURE.md
+├── CHANGELOG.md (updated)
+└── ...
+```
+
+#### API Integration
+- Uses `oci.identity.IdentityClient` for tag structure data
+- Uses `oci.usage_api.UsageapiClient` for cost/tag correlations
+- Efficient batching and parallel processing
+- Smart caching to avoid redundant API calls
+
+---
+
 ## Version 2.0 (November 2025)
 
 ### Major Refactoring

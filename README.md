@@ -11,6 +11,7 @@ This tool queries the OCI Usage API to retrieve cost and usage information, then
 - ✅ **Dual API Calls**: Combines COST and USAGE query types for comprehensive data
 - ✅ **Automatic Enrichment**: Fetches compute instance metadata (shape, display name)
 - ✅ **Cost-Saving Recommendations**: Fetches actionable recommendations from Cloud Advisor API
+- ✅ **Growth Collection**: Analyze tag structure, tag defaults, and cost-tracking tags
 - ✅ **Clean Architecture**: Decoupled Python logic and bash wrapper
 - ✅ **Virtual Environment**: Isolated Python dependencies
 - ✅ **OCI Cloud Shell Compatible**: Works with instance principal authentication
@@ -33,6 +34,7 @@ cost_report/
 │   ├── ARCHITECTURE.md                  # System design and data flow
 │   ├── QUICK_REFERENCE.md               # Common usage patterns and examples
 │   ├── CHANGELOG.md                     # Version history
+│   ├── GROWTH_COLLECTION.md             # Tag analysis and growth collection guide
 │   ├── RECOMMENDATIONS.md               # Cost-saving recommendations guide
 │   └── RECOMMENDATIONS_QUICK_REFERENCE.md # Recommendations quick reference
 ├── IMPLEMENTATION_SUMMARY.md            # Summary of recent enhancements
@@ -208,6 +210,90 @@ Change currency display (default: USD):
   --only-recommendations \
   --currency EUR
 ```
+
+### Stage Control Options
+
+Control which stages to run for faster testing:
+
+```bash
+# Skip cost data collection
+./collector.sh <params> --skip-cost
+
+# Skip usage data collection
+./collector.sh <params> --skip-usage
+
+# Skip metadata enrichment
+./collector.sh <params> --skip-enrichment
+
+# Skip recommendations
+./collector.sh <params> --skip-recommendations
+
+# Combine multiple flags
+./collector.sh <params> --skip-cost --skip-usage --only-recommendations
+```
+
+## Growth Collection - Tag Analysis
+
+**NEW in v2.1:** Comprehensive tag analysis for understanding your tagging structure, cost allocation, and growth patterns.
+
+### What It Collects
+
+The growth collection feature analyzes six key aspects of your OCI tagging:
+
+| Data Point | Purpose |
+|------------|---------|
+| **Tag Namespaces** | Understand tagging structure |
+| **Tag Definitions** | Available tags per namespace |
+| **Tag Defaults** | Auto-tagging rules |
+| **Defined Tags on Resources** | Cost allocation & chargeback |
+| **Freeform Tags on Resources** | Custom metadata tracking |
+| **Cost-Tracking Tags** | Tag-based cost breakdown |
+
+### Quick Start
+
+#### Option 1: Growth Collection Only
+```bash
+./collector.sh <tenancy_ocid> <region> <from_date> <to_date> --only-growth
+```
+
+**Example:**
+```bash
+./collector.sh \
+  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  us-ashburn-1 \
+  2025-11-01 \
+  2025-12-01 \
+  --only-growth
+```
+
+#### Option 2: Full Collection with Growth Data
+```bash
+./collector.sh <tenancy_ocid> <region> <from_date> <to_date> --growth-collection
+```
+
+### Output Files
+
+**growth_collection_tags.json** - Complete JSON with all tag data:
+- Tag namespaces and definitions
+- Tag defaults (auto-tagging rules)
+- Resource tag statistics
+- Cost breakdown by tags
+
+**growth_collection_summary.txt** - Human-readable summary report:
+- Executive summary of tag usage
+- Top cost-driving tag combinations
+- Tag compliance statistics
+- Compartment-level tag defaults
+
+### Use Cases
+
+- **Cost Allocation:** Identify which tags drive the most cost
+- **Chargeback:** Tag-based cost breakdown for departments/projects
+- **Compliance:** Ensure resources are properly tagged
+- **Governance:** Review and validate auto-tagging rules
+- **Trend Analysis:** Track tagging patterns over time
+
+See `docs/GROWTH_COLLECTION.md` for detailed documentation.
 
 ### Stage Control Options
 
