@@ -234,7 +234,7 @@ Control which stages to run for faster testing:
 
 ## Growth Collection - Tag Analysis
 
-**NEW in v2.1:** Comprehensive tag analysis for understanding your tagging structure, cost allocation, and growth patterns.
+**NEW in v2.2:** Comprehensive tag analysis for understanding your tagging structure, cost allocation, and growth patterns.
 
 ### What It Collects
 
