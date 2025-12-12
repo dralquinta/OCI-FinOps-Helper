@@ -86,8 +86,8 @@ class OCIRecommendationsFetcher:
                     print("   4. Verify your OCI CLI session is authenticated:")
                     print("      oci session validate --auth security_token")
                     print("\n   Required IAM Policy:")
-                    print("   allow group <YourGroup> to read cloud-advisor-family in tenancy")
-                    print("   allow group <YourGroup> to manage optimizer-api-family in tenancy")
+                    print("   allow group <YourGroup> to manage cloud-advisor-family in tenancy")
+
                 
                 print(f"\n   Full error output (first 500 chars):")
                 print(f"   {result.stderr[:500]}")
