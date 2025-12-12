@@ -88,19 +88,27 @@ class OCIAPIExecutor:
             # Parse response
             response = json.loads(result.stdout)
             
-            # Check for API errors
-            if 'code' in response and 'message' in response:
-                print(f"❌ API Error: {response.get('message')}")
-                print(f"\n📋 Error details for debugging:")
-                print(f"   Error code: {response.get('code')}")
-                print(f"   Error message: {response.get('message')}")
-                if 'details' in response:
-                    print(f"   Details: {response.get('details')}")
-                return None
-            
-            # Extract data
+            # Extract data first
             api_data = response.get('data', response)
             
+            # Check for API errors in the data section
+            if isinstance(api_data, dict) and 'code' in api_data and 'message' in api_data:
+                print(f"❌ API Error: {api_data.get('message')}")
+                print(f"\n📋 Error details for debugging:")
+                print(f"   Error code: {api_data.get('code')}")
+                print(f"   Error message: {api_data.get('message')}")
+                if 'details' in api_data:
+                    print(f"   Details: {api_data.get('details')}")
+                
+                # Save error response for investigation
+                debug_file = self.output_dir / Path(f"debug_error_{call_name}.json")
+                with open(debug_file, 'w') as f:
+                    json.dump(response, f, indent=2)
+                print(f"   📁 Full error response saved to: {debug_file}")
+                
+                return None
+            
+            # Check for successful response with items
             if isinstance(api_data, dict) and 'items' in api_data:
                 print(f"✅ Success: Retrieved {len(api_data['items'])} records")
                 return api_data
