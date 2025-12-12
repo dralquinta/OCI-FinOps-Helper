@@ -707,9 +707,367 @@ class OCIGrowthCollector:
             )
         }
     
-    def collect_all(self, from_date=None, to_date=None, enable_enrichment=True):
+    def collect_performance_metrics(self, from_date, to_date):
         """
-        Collect all growth-related data.
+        Collect performance metrics from OCI Monitoring service.
+        Data Points:
+        - Compute: CpuUtilization, MemoryUtilization (Resource saturation)
+        - Storage: VolumeReadThroughput, VolumeWriteThroughput (IOPS usage)
+        - Network: NetworksBytesIn, NetworksBytesOut (Bandwidth usage)
+        - Database: CpuUtilization, StorageUtilization (DB resource usage)
+        - Load Balancer: ConnectionsCount (Load balancer load)
+        
+        API: oci.monitoring.MonitoringClient.summarize_metrics_data()
+        Purpose: Identify resource saturation, capacity planning, optimization
+        
+        Args:
+            from_date: Start date (YYYY-MM-DD)
+            to_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Dictionary with performance metrics by resource type
+        """
+        print(f"\n{'='*70}")
+        print("📊 Collecting Performance Metrics")
+        print(f"{'='*70}")
+        
+        # Define metrics to collect for each namespace
+        metrics_config = {
+            'oci_computeagent': {
+                'display_name': 'Compute Instances',
+                'metrics': ['CpuUtilization', 'MemoryUtilization']
+            },
+            'oci_blockstore': {
+                'display_name': 'Block Volumes',
+                'metrics': ['VolumeReadThroughput', 'VolumeWriteThroughput']
+            },
+            'oci_vcn': {
+                'display_name': 'Network (VCN)',
+                'metrics': ['VnicToNetworkBytes', 'VnicFromNetworkBytes']
+            },
+            'oci_database': {
+                'display_name': 'Databases',
+                'metrics': ['CpuUtilization', 'StorageUtilization']
+            },
+            'oci_lbaas': {
+                'display_name': 'Load Balancers',
+                'metrics': ['ActiveConnections', 'ConnectionCount']
+            }
+        }
+        
+        all_metrics = {}
+        
+        for namespace, config in metrics_config.items():
+            print(f"\n🔍 Collecting {config['display_name']} metrics...")
+            
+            namespace_metrics = {
+                'display_name': config['display_name'],
+                'metrics': {}
+            }
+            
+            for metric_name in config['metrics']:
+                # Build query for this metric
+                query = f"{metric_name}[1m].mean()"
+                
+                # Build request body for summarize_metrics_data
+                request_body = {
+                    "namespace": namespace,
+                    "query": query,
+                    "startTime": f"{from_date}T00:00:00.000Z",
+                    "endTime": f"{to_date}T23:59:59.999Z",
+                    "resolution": "1h"
+                }
+                
+                # Save request body
+                request_file = self.output_dir / f"request_metrics_{namespace}_{metric_name}.json"
+                with open(request_file, 'w') as f:
+                    json.dump(request_body, f, indent=2)
+                
+                api_endpoint = f"https://telemetry.{self.home_region}.oraclecloud.com/20180401/metrics/actions/summarizeMetricsData"
+                
+                command = [
+                    'oci', 'raw-request',
+                    '--http-method', 'POST',
+                    '--target-uri', api_endpoint,
+                    '--request-body', f'file://{request_file}',
+                    '--output', 'json'
+                ]
+                
+                data = self._execute_oci_command(
+                    command,
+                    f"  📈 Fetching {metric_name}..."
+                )
+                
+                # Clean up request file
+                if request_file.exists():
+                    request_file.unlink()
+                
+                if data and isinstance(data, list) and len(data) > 0:
+                    # Store metric data
+                    namespace_metrics['metrics'][metric_name] = {
+                        'data_points': len(data),
+                        'samples': data[:100]  # Store first 100 samples
+                    }
+                    print(f"    ✅ Collected {len(data)} data points for {metric_name}")
+                else:
+                    namespace_metrics['metrics'][metric_name] = {
+                        'data_points': 0,
+                        'samples': []
+                    }
+                    print(f"    ⚠️  No data found for {metric_name}")
+            
+            all_metrics[namespace] = namespace_metrics
+        
+        result = {
+            'collection_period': {
+                'from_date': from_date,
+                'to_date': to_date
+            },
+            'metrics_by_namespace': all_metrics
+        }
+        
+        print("\n✅ Performance metrics collection complete")
+        return result
+    
+    def collect_audit_events(self, from_date, to_date):
+        """
+        Collect audit events from OCI Audit service.
+        Data Point: Audit Events
+        API: oci.audit.AuditClient.list_events(compartment_id, start_time, end_time)
+        Purpose: Track resource lifecycle patterns, identify who did what and when
+        
+        Args:
+            from_date: Start date (YYYY-MM-DD)
+            to_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Dictionary with audit events summary and patterns
+        """
+        print(f"\n{'='*70}")
+        print("🔍 Collecting Audit Events")
+        print(f"{'='*70}")
+        
+        if not self.compartments:
+            self._get_all_compartments()
+        
+        all_events = []
+        event_stats = {
+            'total_events': 0,
+            'event_types': {},
+            'resource_types': {},
+            'users': set(),
+            'compartments_with_events': set()
+        }
+        
+        print(f"Scanning {len(self.compartments)} compartments for audit events...")
+        print(f"Using {self.max_workers_compartments} parallel workers...")
+        
+        tracker = ProgressTracker(len(self.compartments))
+        completed = 0
+        
+        # Helper function for parallel processing
+        def fetch_audit_events(comp_id):
+            command = [
+                'oci', 'audit', 'event', 'list',
+                '--compartment-id', comp_id,
+                '--start-time', f"{from_date}T00:00:00.000Z",
+                '--end-time', f"{to_date}T23:59:59.999Z",
+                '--all',
+                '--output', 'json'
+            ]
+            
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    response = json.loads(result.stdout)
+                    return comp_id, response.get('data', [])
+                else:
+                    return comp_id, []
+            except Exception:
+                return comp_id, []
+        
+        # Execute in parallel
+        with ThreadPoolExecutor(max_workers=self.max_workers_compartments) as executor:
+            future_to_compartment = {
+                executor.submit(fetch_audit_events, comp_id): comp_id
+                for comp_id in self.compartments
+            }
+            
+            for future in as_completed(future_to_compartment):
+                comp_id, events = future.result()
+                completed += 1
+                
+                if events:
+                    all_events.extend(events)
+                    event_stats['compartments_with_events'].add(comp_id)
+                    
+                    # Analyze events
+                    for event in events:
+                        event_stats['total_events'] += 1
+                        
+                        event_type = event.get('data', {}).get('eventName', 'Unknown')
+                        event_stats['event_types'][event_type] = event_stats['event_types'].get(event_type, 0) + 1
+                        
+                        resource_type = event.get('data', {}).get('resourceName', 'Unknown')
+                        event_stats['resource_types'][resource_type] = event_stats['resource_types'].get(resource_type, 0) + 1
+                        
+                        principal = event.get('data', {}).get('identity', {}).get('principalName', '')
+                        if principal:
+                            event_stats['users'].add(principal)
+                
+                tracker.update(completed)
+        
+        tracker.finish()
+        
+        # Convert sets to lists for JSON serialization
+        result = {
+            'collection_period': {
+                'from_date': from_date,
+                'to_date': to_date
+            },
+            'total_events': event_stats['total_events'],
+            'compartments_with_events': len(event_stats['compartments_with_events']),
+            'unique_users': len(event_stats['users']),
+            'event_types': dict(sorted(event_stats['event_types'].items(), key=lambda x: x[1], reverse=True)),
+            'resource_types': dict(sorted(event_stats['resource_types'].items(), key=lambda x: x[1], reverse=True)),
+            'sample_events': all_events[:1000]  # Store first 1000 events
+        }
+        
+        print(f"✅ Collected {result['total_events']} audit events")
+        print(f"  📊 Unique event types: {len(result['event_types'])}")
+        print(f"  📊 Unique resource types: {len(result['resource_types'])}")
+        print(f"  📊 Unique users: {result['unique_users']}")
+        
+        # Show top 5 event types
+        print("\n📋 Top 5 event types:")
+        for event_type, count in list(result['event_types'].items())[:5]:
+            print(f"  🔹 {event_type}: {count}")
+        
+        return result
+    
+    def collect_event_rules(self):
+        """
+        Collect event rules from OCI Events service.
+        Data Point: Event Rules
+        API: oci.events.EventsClient.list_rules(compartment_id)
+        Purpose: Understand automated actions and event-driven workflows
+        
+        Returns:
+            Dictionary with event rules by compartment
+        """
+        print(f"\n{'='*70}")
+        print("⚡ Collecting Event Rules")
+        print(f"{'='*70}")
+        
+        if not self.compartments:
+            self._get_all_compartments()
+        
+        all_rules = []
+        rule_stats = {
+            'total_rules': 0,
+            'enabled_rules': 0,
+            'disabled_rules': 0,
+            'action_types': {},
+            'compartments_with_rules': set()
+        }
+        
+        print(f"Scanning {len(self.compartments)} compartments for event rules...")
+        print(f"Using {self.max_workers_compartments} parallel workers...")
+        
+        tracker = ProgressTracker(len(self.compartments))
+        completed = 0
+        
+        # Helper function for parallel processing
+        def fetch_event_rules(comp_id):
+            command = [
+                'oci', 'events', 'rule', 'list',
+                '--compartment-id', comp_id,
+                '--all',
+                '--output', 'json'
+            ]
+            
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode == 0:
+                    response = json.loads(result.stdout)
+                    return comp_id, response.get('data', [])
+                else:
+                    return comp_id, []
+            except Exception:
+                return comp_id, []
+        
+        # Execute in parallel
+        with ThreadPoolExecutor(max_workers=self.max_workers_compartments) as executor:
+            future_to_compartment = {
+                executor.submit(fetch_event_rules, comp_id): comp_id
+                for comp_id in self.compartments
+            }
+            
+            for future in as_completed(future_to_compartment):
+                comp_id, rules = future.result()
+                completed += 1
+                
+                if rules:
+                    all_rules.extend(rules)
+                    rule_stats['compartments_with_rules'].add(comp_id)
+                    
+                    # Analyze rules
+                    for rule in rules:
+                        rule_stats['total_rules'] += 1
+                        
+                        if rule.get('lifecycle-state') == 'ACTIVE':
+                            rule_stats['enabled_rules'] += 1
+                        else:
+                            rule_stats['disabled_rules'] += 1
+                        
+                        # Analyze actions
+                        actions = rule.get('actions', {})
+                        if isinstance(actions, dict):
+                            for action in actions.get('actions', []):
+                                action_type = action.get('action-type', 'Unknown')
+                                rule_stats['action_types'][action_type] = rule_stats['action_types'].get(action_type, 0) + 1
+                
+                tracker.update(completed)
+        
+        tracker.finish()
+        
+        result = {
+            'total_rules': rule_stats['total_rules'],
+            'enabled_rules': rule_stats['enabled_rules'],
+            'disabled_rules': rule_stats['disabled_rules'],
+            'compartments_with_rules': len(rule_stats['compartments_with_rules']),
+            'action_types': dict(sorted(rule_stats['action_types'].items(), key=lambda x: x[1], reverse=True)),
+            'rules': all_rules
+        }
+        
+        print(f"✅ Collected {result['total_rules']} event rules")
+        print(f"  📊 Enabled: {result['enabled_rules']}")
+        print(f"  📊 Disabled: {result['disabled_rules']}")
+        print(f"  📊 Compartments with rules: {result['compartments_with_rules']}")
+        
+        # Show action types
+        if result['action_types']:
+            print("\n📋 Action types:")
+            for action_type, count in result['action_types'].items():
+                print(f"  ⚡ {action_type}: {count}")
+        
+        return result
+    
+    def collect_all(self, from_date=None, to_date=None):
+        """
+        Collect all growth-related data including performance metrics, audit events, and event rules.
         
         Args:
             from_date: Start date for usage/cost queries (YYYY-MM-DD)
@@ -719,7 +1077,7 @@ class OCIGrowthCollector:
             Dictionary with all collected data
         """
         print("="*70)
-        print("🚀 OCI Growth Collection - Tag Analysis")
+        print("🚀 OCI Growth Collection - Comprehensive Analysis")
         print("="*70)
         print(f"Tenancy: {self.tenancy_ocid}")
         print(f"Region: {self.home_region}")
@@ -727,7 +1085,7 @@ class OCIGrowthCollector:
             print(f"Date Range: {from_date} to {to_date}")
         
         results = {
-            'collection_timestamp': datetime.utcnow().isoformat(),
+            'collection_timestamp': datetime.now().isoformat(),
             'tenancy_ocid': self.tenancy_ocid,
             'home_region': self.home_region
         }
@@ -742,8 +1100,17 @@ class OCIGrowthCollector:
         if from_date and to_date:
             results['resource_tags'] = self.collect_resource_tags(from_date, to_date)
             results['cost_tracking_tags'] = self.collect_cost_tracking_tags(from_date, to_date)
+            
+            # Collect performance metrics
+            results['performance_metrics'] = self.collect_performance_metrics(from_date, to_date)
+            
+            # Collect audit events
+            results['audit_events'] = self.collect_audit_events(from_date, to_date)
         else:
-            print("\n⚠️  Skipping resource tags and cost-tracking tags (no date range provided)")
+            print("\n⚠️  Skipping date-range-dependent collections (no date range provided)")
+        
+        # Collect event rules (no date range needed)
+        results['event_rules'] = self.collect_event_rules()
         
         # Save all collected data
         self._save_results(results)
@@ -854,6 +1221,64 @@ class OCIGrowthCollector:
                 cost_by_tag = ct.get('cost_by_tag', {})
                 for i, (tag_full, tag_data) in enumerate(list(cost_by_tag.items())[:10], 1):
                     f.write(f"  {i}. {tag_full}: ${tag_data['total_cost']:,.2f}\n")
+                f.write("\n")
+            
+            # Performance Metrics (if available)
+            if 'performance_metrics' in results and results['performance_metrics']:
+                f.write("-"*70 + "\n")
+                f.write("PERFORMANCE METRICS\n")
+                f.write("-"*70 + "\n")
+                pm = results['performance_metrics']
+                period = pm.get('collection_period', {})
+                f.write(f"Collection Period: {period.get('from_date', 'N/A')} to {period.get('to_date', 'N/A')}\n\n")
+                
+                metrics_by_ns = pm.get('metrics_by_namespace', {})
+                for namespace, ns_data in metrics_by_ns.items():
+                    f.write(f"{ns_data.get('display_name', namespace)}:\n")
+                    for metric_name, metric_data in ns_data.get('metrics', {}).items():
+                        data_points = metric_data.get('data_points', 0)
+                        f.write(f"  - {metric_name}: {data_points} data points\n")
+                    f.write("\n")
+            
+            # Audit Events (if available)
+            if 'audit_events' in results and results['audit_events']:
+                f.write("-"*70 + "\n")
+                f.write("AUDIT EVENTS\n")
+                f.write("-"*70 + "\n")
+                ae = results['audit_events']
+                period = ae.get('collection_period', {})
+                f.write(f"Collection Period: {period.get('from_date', 'N/A')} to {period.get('to_date', 'N/A')}\n")
+                f.write(f"Total Events: {ae.get('total_events', 0)}\n")
+                f.write(f"Unique Users: {ae.get('unique_users', 0)}\n")
+                f.write(f"Compartments with Events: {ae.get('compartments_with_events', 0)}\n")
+                
+                f.write("\nTop 10 Event Types:\n")
+                event_types = ae.get('event_types', {})
+                for i, (event_type, count) in enumerate(list(event_types.items())[:10], 1):
+                    f.write(f"  {i}. {event_type}: {count}\n")
+                
+                f.write("\nTop 10 Resource Types:\n")
+                resource_types = ae.get('resource_types', {})
+                for i, (resource_type, count) in enumerate(list(resource_types.items())[:10], 1):
+                    f.write(f"  {i}. {resource_type}: {count}\n")
+                f.write("\n")
+            
+            # Event Rules (if available)
+            if 'event_rules' in results and results['event_rules']:
+                f.write("-"*70 + "\n")
+                f.write("EVENT RULES\n")
+                f.write("-"*70 + "\n")
+                er = results['event_rules']
+                f.write(f"Total Rules: {er.get('total_rules', 0)}\n")
+                f.write(f"Enabled Rules: {er.get('enabled_rules', 0)}\n")
+                f.write(f"Disabled Rules: {er.get('disabled_rules', 0)}\n")
+                f.write(f"Compartments with Rules: {er.get('compartments_with_rules', 0)}\n")
+                
+                action_types = er.get('action_types', {})
+                if action_types:
+                    f.write("\nAction Types:\n")
+                    for action_type, count in action_types.items():
+                        f.write(f"  - {action_type}: {count}\n")
                 f.write("\n")
             
             f.write("="*70 + "\n")

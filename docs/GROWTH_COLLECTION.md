@@ -6,7 +6,9 @@ The Growth Collection feature provides comprehensive tag analysis for OCI (Oracl
 
 ## Data Points Collected
 
-The growth collection gathers six key data points about tags in your OCI tenancy:
+The growth collection gathers comprehensive data about your OCI tenancy:
+
+### Tag Analysis Data Points
 
 | Data Point | OCI API | Method/Endpoint | Purpose |
 |------------|---------|-----------------|---------|
@@ -16,6 +18,23 @@ The growth collection gathers six key data points about tags in your OCI tenancy
 | **Freeform Tags on Resources** | Each resource API | `list_* methods return freeform_tags` | Custom metadata tracking |
 | **Tag Defaults** | `oci.identity.IdentityClient` | `list_tag_defaults(compartment_id)` | Auto-tagging rules |
 | **Cost-Tracking Tags** | `oci.usage_api.UsageapiClient` | Query with `tagNamespace`, `tagKey`, `tagValue` in `groupBy` | Tag-based cost breakdown |
+
+### Performance Metrics Data Points
+
+| Data Point | OCI API | Method/Endpoint | Purpose |
+|------------|---------|-----------------|---------|
+| **Compute Metrics** | `oci.monitoring.MonitoringClient` | `summarize_metrics_data()` with `CpuUtilization`, `MemoryUtilization` | Resource saturation analysis |
+| **Storage Metrics** | `oci.monitoring.MonitoringClient` | `summarize_metrics_data()` with `VolumeReadThroughput`, `VolumeWriteThroughput` | IOPS usage patterns |
+| **Network Metrics** | `oci.monitoring.MonitoringClient` | `summarize_metrics_data()` with `NetworksBytesIn`, `NetworksBytesOut` | Bandwidth usage |
+| **Database Metrics** | `oci.monitoring.MonitoringClient` | `summarize_metrics_data()` with `CpuUtilization`, `StorageUtilization` | DB resource usage |
+| **Load Balancer Metrics** | `oci.monitoring.MonitoringClient` | `summarize_metrics_data()` with `ConnectionsCount` | Load balancer load |
+
+### Audit and Event Data Points
+
+| Data Point | OCI API | Method/Endpoint | Purpose |
+|------------|---------|-----------------|---------|
+| **Audit Events** | `oci.audit.AuditClient` | `list_events(compartment_id, start_time, end_time)` | Resource lifecycle patterns, identify who did what |
+| **Event Rules** | `oci.events.EventsClient` | `list_rules(compartment_id)` | Automated actions and event-driven workflows |
 
 ## Usage
 
@@ -106,7 +125,7 @@ results = growth_collector.collect_all(
 Growth collection generates two main output files:
 
 ### 1. `growth_collection_tags.json`
-Complete JSON file containing all collected tag data:
+Complete JSON file containing all collected data:
 
 ```json
 {
@@ -118,12 +137,56 @@ Complete JSON file containing all collected tag data:
   "tag_definitions": {...},
   "tag_defaults": [...],
   "resource_tags": {...},
-  "cost_tracking_tags": {...}
+  "cost_tracking_tags": {...},
+  "performance_metrics": {
+    "collection_period": {
+      "from_date": "2025-11-01",
+      "to_date": "2025-12-01"
+    },
+    "metrics_by_namespace": {
+      "oci_computeagent": {
+        "display_name": "Compute Instances",
+        "metrics": {
+          "CpuUtilization": {"data_points": 720, "samples": [...]},
+          "MemoryUtilization": {"data_points": 720, "samples": [...]}
+        }
+      },
+      "oci_blockstore": {...},
+      "oci_vcn": {...},
+      "oci_database": {...},
+      "oci_lbaas": {...}
+    }
+  },
+  "audit_events": {
+    "collection_period": {...},
+    "total_events": 15234,
+    "compartments_with_events": 12,
+    "unique_users": 25,
+    "event_types": {...},
+    "resource_types": {...},
+    "sample_events": [...]
+  },
+  "event_rules": {
+    "total_rules": 42,
+    "enabled_rules": 38,
+    "disabled_rules": 4,
+    "compartments_with_rules": 8,
+    "action_types": {...},
+    "rules": [...]
+  }
 }
 ```
 
 ### 2. `growth_collection_summary.txt`
-Human-readable summary report with key statistics:
+Human-readable summary report with key statistics including:
+- Compartment summary
+- Tag namespaces and definitions
+- Tag defaults (auto-tagging rules)
+- Resource tags statistics
+- Cost-tracking tags analysis
+- **Performance metrics by resource type**
+- **Audit events summary with top event types**
+- **Event rules configuration**
 
 ```
 ======================================================================
@@ -221,6 +284,46 @@ Top 10 Cost-Driving Tags:
   - Chargeback reporting
 - **Output:** Cost breakdown by tag combinations
 
+### 6. Performance Metrics
+- **What:** Performance and utilization metrics from OCI Monitoring service
+- **API Call:** `oci.monitoring.MonitoringClient.summarize_metrics_data()`
+- **Metrics Collected:**
+  - **Compute:** CpuUtilization, MemoryUtilization
+  - **Storage:** VolumeReadThroughput, VolumeWriteThroughput
+  - **Network:** NetworksBytesIn, NetworksBytesOut
+  - **Database:** CpuUtilization, StorageUtilization
+  - **Load Balancer:** ConnectionsCount
+- **Use Case:**
+  - Identify resource saturation and bottlenecks
+  - Capacity planning and rightsizing
+  - Performance optimization opportunities
+  - Correlate performance with cost trends
+- **Output:** Time-series metrics data for trend analysis
+
+### 7. Audit Events
+- **What:** Audit log events tracking resource lifecycle and user actions
+- **API Call:** `oci audit event list --compartment-id <compartment_id>`
+- **Use Case:**
+  - Track who created/modified/deleted resources
+  - Identify resource lifecycle patterns
+  - Compliance and security auditing
+  - Understand growth patterns by user/team
+- **Coverage:** Scans all compartments in the tenancy
+- **Output:** Event summaries with top event types and users
+- **Multi-threaded:** Processes all compartments in parallel
+
+### 8. Event Rules
+- **What:** Configured event rules for automated actions
+- **API Call:** `oci events rule list --compartment-id <compartment_id>`
+- **Use Case:**
+  - Understand automated workflows and actions
+  - Document event-driven architecture
+  - Identify automation opportunities
+  - Compliance validation for automated responses
+- **Coverage:** Scans all compartments in the tenancy
+- **Output:** Rules summary with action types and states
+- **Multi-threaded:** Processes all compartments in parallel
+
 ## Prerequisites
 
 ### Required Permissions
@@ -238,6 +341,16 @@ Allow group FinOpsUsers to read usage-reports in tenancy
 
 # Compartment listing
 Allow group FinOpsUsers to inspect compartments in tenancy
+
+# Monitoring/Metrics permissions for performance data
+Allow group FinOpsUsers to read metrics in tenancy
+
+# Audit permissions for audit events
+Allow group FinOpsUsers to read audit-events in tenancy
+
+# Events permissions for event rules
+Allow group FinOpsUsers to read cloudevents-rules in tenancy
+Allow group FinOpsUsers to inspect cloudevents-rules in tenancy
 ```
 
 ### OCI CLI Configuration
@@ -255,13 +368,18 @@ oci iam tenancy get --tenancy-id <your-tenancy-ocid>
 - **Tag Defaults:** ~1-3 minutes (parallel processing with 20 workers scanning all compartments)
 - **Resource Tags:** ~30-60 seconds (depends on data volume)
 - **Cost-Tracking Tags:** ~30-60 seconds (depends on data volume)
+- **Performance Metrics:** ~2-5 minutes (depends on number of resources and date range)
+- **Audit Events:** ~2-5 minutes (parallel processing with 30 workers scanning all compartments)
+- **Event Rules:** ~1-2 minutes (parallel processing with 30 workers scanning all compartments)
 
-**Total estimated time:** 2-5 minutes for a typical tenancy (dramatically improved with parallel processing)
+**Total estimated time:** 5-15 minutes for a typical tenancy (dramatically improved with parallel processing)
 
 **Performance Improvements (v2.1.1):**
 - Tag definitions: ~75% faster with parallel processing (10 concurrent workers)
 - Tag defaults: ~90% faster with parallel processing (20 concurrent workers)
-- Large tenancies (2000+ compartments): Reduced from ~13 minutes to ~2-3 minutes
+- Audit events: Parallel processing across all compartments (30 concurrent workers)
+- Event rules: Parallel processing across all compartments (30 concurrent workers)
+- Large tenancies (2000+ compartments): Reduced from ~13 minutes to ~5-8 minutes
 
 ### Resource Usage
 - Memory: ~100-500 MB
@@ -302,6 +420,35 @@ Review and validate your tag default rules:
 ```bash
 # Check tag_defaults for each compartment
 # Ensure auto-tagging aligns with policies
+```
+
+### 5. Performance Analysis & Optimization
+Identify resource saturation and optimization opportunities:
+```bash
+# Run growth collection with date range
+./collector.sh <tenancy> <region> 2025-11-01 2025-12-01 --only-growth
+
+# Analyze performance_metrics in growth_collection_tags.json
+# Look for high CPU/memory utilization
+# Identify underutilized resources for rightsizing
+```
+
+### 6. Audit & Compliance Tracking
+Track resource lifecycle and user activity patterns:
+```bash
+# Review audit_events for compliance
+# Identify who created/modified resources
+# Track unusual activity patterns
+# Generate accountability reports
+```
+
+### 7. Automation & Event-Driven Architecture
+Understand your automated workflows:
+```bash
+# Review event_rules across compartments
+# Document existing automation
+# Identify gaps in event-driven responses
+# Plan new automation opportunities
 ```
 
 ## Integration with Other Tools
@@ -386,11 +533,12 @@ For issues or questions:
 
 ## Version History
 
-- **v2.1** (2025-12-11): Added growth collection feature
+- **v2.2** (2025-12-12): Enhanced growth collection with performance metrics, audit events, and event rules
+- **v2.1** (2025-12-11): Added growth collection feature with tag analysis
 - **v2.0** (2025-11): Initial multi-stage collector
 - **v1.0** (2024): Basic cost collection
 
 ---
 
-**Last Updated:** December 11, 2025  
+**Last Updated:** December 12, 2025  
 **Maintainer:** OCI FinOps Team
