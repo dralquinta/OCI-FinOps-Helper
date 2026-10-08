@@ -1,0 +1,4 @@
+interface:
+  display_name: "Development"
+  short_description: "Plan, test, implement, verify, and commit repo changes"
+  default_prompt: "Use $development to implement a repository change with clarification, TDD documentation, parallel agent coordination, validation, and a clean commit."

@@ -30,3 +30,6 @@ instance_metadata.json
 Thumbs.db
 
 customer_files
+# Graphify generated output
+graphify-out/
+.graphify/
