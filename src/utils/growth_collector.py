@@ -7,9 +7,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .progress import ProgressSpinner, ProgressTracker
+from .finops_collector import OCIFinOpsCollector
 
 
 class OCIGrowthCollector:
@@ -71,6 +72,11 @@ class OCIGrowthCollector:
             
             # Parse JSON response
             response = json.loads(result.stdout)
+
+            # Search has explicit pagination; its CLI response carries the
+            # next-page token beside data rather than inside the collection.
+            if command[1:4] == ['search', 'resource', 'structured-search']:
+                return response
             
             # Check for data field (standard OCI CLI response format)
             if 'data' in response:
@@ -707,128 +713,115 @@ class OCIGrowthCollector:
             )
         }
     
+    def _get_subscribed_regions(self):
+        data = self._execute_oci_command([
+            'oci', 'iam', 'region-subscription', 'list',
+            '--tenancy-id', self.tenancy_ocid, '--region', self.home_region,
+            '--all', '--output', 'json'
+        ], "Discovering subscribed regions")
+        if isinstance(data, dict):
+            data = data.get('items')
+        regions = sorted({item['region-name'] for item in data or []
+                          if item.get('region-name') and item.get('status') == 'READY'})
+        self.region_discovery_complete = isinstance(data, list) and bool(regions)
+        return regions or [self.home_region]
+
     def collect_performance_metrics(self, from_date, to_date):
+        """Retain resource metric streams across regions and compartments.
+
+        Discover metric names rather than assuming every service emits the same
+        metrics. An empty response or failed query is never proof of inactivity.
+        Dates use the same exclusive end boundary as the Usage API.
         """
-        Collect performance metrics from OCI Monitoring service.
-        Data Points:
-        - Compute: CpuUtilization, MemoryUtilization (Resource saturation)
-        - Storage: VolumeReadThroughput, VolumeWriteThroughput (IOPS usage)
-        - Network: NetworksBytesIn, NetworksBytesOut (Bandwidth usage)
-        - Database: CpuUtilization, StorageUtilization (DB resource usage)
-        - Load Balancer: ConnectionsCount (Load balancer load)
-        
-        API: oci.monitoring.MonitoringClient.summarize_metrics_data()
-        Purpose: Identify resource saturation, capacity planning, optimization
-        
-        Args:
-            from_date: Start date (YYYY-MM-DD)
-            to_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            Dictionary with performance metrics by resource type
-        """
-        print(f"\n{'='*70}")
-        print("📊 Collecting Performance Metrics")
-        print(f"{'='*70}")
-        
-        # Define metrics to collect for each namespace
-        metrics_config = {
-            'oci_computeagent': {
-                'display_name': 'Compute Instances',
-                'metrics': ['CpuUtilization', 'MemoryUtilization']
-            },
-            'oci_blockstore': {
-                'display_name': 'Block Volumes',
-                'metrics': ['VolumeReadThroughput', 'VolumeWriteThroughput']
-            },
-            'oci_vcn': {
-                'display_name': 'Network (VCN)',
-                'metrics': ['VnicToNetworkBytes', 'VnicFromNetworkBytes']
-            },
-            'oci_database': {
-                'display_name': 'Databases',
-                'metrics': ['CpuUtilization', 'StorageUtilization']
-            },
-            'oci_lbaas': {
-                'display_name': 'Load Balancers',
-                'metrics': ['ActiveConnections', 'ConnectionCount']
-            }
+        start = datetime.strptime(from_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        end = datetime.strptime(to_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        if end <= start:
+            raise ValueError('Monitoring end date must be after start date')
+        if not self.compartments:
+            self._get_all_compartments()
+        regions = self._get_subscribed_regions()
+        namespaces = {
+            'oci_computeagent': 'Compute Instances',
+            'oci_blockstore': 'Block and Boot Volumes',
+            'oci_vcn': 'Virtual Network Interfaces',
+            'oci_database': 'Databases',
+            'oci_autonomous_database': 'Autonomous Databases',
+            'oci_lbaas': 'Load Balancers',
+            'oci_nlb': 'Network Load Balancers',
+            'oci_objectstorage': 'Object Storage'
         }
-        
-        all_metrics = {}
-        
-        for namespace, config in metrics_config.items():
-            print(f"\n🔍 Collecting {config['display_name']} metrics...")
-            
-            namespace_metrics = {
-                'display_name': config['display_name'],
-                'metrics': {}
-            }
-            
-            for metric_name in config['metrics']:
-                # Build query for this metric
-                query = f"{metric_name}[1m].mean()"
-                
-                # Build request body for summarize_metrics_data
-                request_body = {
-                    "namespace": namespace,
-                    "query": query,
-                    "startTime": f"{from_date}T00:00:00.000Z",
-                    "endTime": f"{to_date}T23:59:59.999Z",
-                    "resolution": "1h"
-                }
-                
-                # Save request body
-                request_file = self.output_dir / f"request_metrics_{namespace}_{metric_name}.json"
-                with open(request_file, 'w') as f:
-                    json.dump(request_body, f, indent=2)
-                
-                api_endpoint = f"https://telemetry.{self.home_region}.oraclecloud.com/20180401/metrics/actions/summarizeMetricsData"
-                
-                command = [
-                    'oci', 'raw-request',
-                    '--http-method', 'POST',
-                    '--target-uri', api_endpoint,
-                    '--request-body', f'file://{request_file}',
-                    '--output', 'json'
-                ]
-                
-                data = self._execute_oci_command(
-                    command,
-                    f"  📈 Fetching {metric_name}..."
-                )
-                
-                # Clean up request file
-                if request_file.exists():
-                    request_file.unlink()
-                
-                if data and isinstance(data, list) and len(data) > 0:
-                    # Store metric data
-                    namespace_metrics['metrics'][metric_name] = {
-                        'data_points': len(data),
-                        'samples': data[:100]  # Store first 100 samples
-                    }
-                    print(f"    ✅ Collected {len(data)} data points for {metric_name}")
-                else:
-                    namespace_metrics['metrics'][metric_name] = {
-                        'data_points': 0,
-                        'samples': []
-                    }
-                    print(f"    ⚠️  No data found for {metric_name}")
-            
-            all_metrics[namespace] = namespace_metrics
-        
-        result = {
-            'collection_period': {
-                'from_date': from_date,
-                'to_date': to_date
-            },
-            'metrics_by_namespace': all_metrics
+        metrics = {namespace: {'display_name': name, 'metrics': {}}
+                   for namespace, name in namespaces.items()}
+        coverage = [{'operation': 'region_discovery',
+                     'status': 'success' if self.region_discovery_complete else 'failed',
+                     'region': self.home_region}]
+        definitions = []
+
+        def fetch(command, context):
+            try:
+                data = self._execute_oci_command(command, 'Collecting Monitoring evidence')
+                if isinstance(data, dict):
+                    data = data.get('items')
+                valid = isinstance(data, list) and all(isinstance(row, dict) for row in data)
+                coverage.append({**context, 'status': ('success' if data else 'empty')
+                                 if valid else 'failed'})
+                return data if valid else None
+            except Exception as error:
+                coverage.append({**context, 'status': 'failed',
+                                 'error_type': type(error).__name__})
+                return None
+
+        # SummarizeMetricsData has no --all. Hourly resolution supports at most
+        # 90 days per request; retain separate windows and their coverage.
+        windows = []
+        cursor = start
+        while cursor < end:
+            window_end = min(cursor + timedelta(days=90), end)
+            windows.append((cursor.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            window_end.strftime('%Y-%m-%dT%H:%M:%SZ')))
+            cursor = window_end
+        for region in regions:
+            for compartment in self.compartments:
+                for namespace in namespaces:
+                    context = {'region': region, 'compartment_id': compartment,
+                               'namespace': namespace}
+                    scope = ['--compartment-id', compartment, '--namespace', namespace,
+                             '--region', region, '--output', 'json']
+                    available = fetch(['oci', 'monitoring', 'metric', 'list',
+                                       *scope, '--all'],
+                                      {**context, 'operation': 'metric_discovery'})
+                    for definition in available or []:
+                        definitions.append({**context, 'record': definition})
+                    names = sorted({row['name'] for row in available or []
+                                    if isinstance(row.get('name'), str) and row['name']})
+                    for name in names:
+                        metric = metrics[namespace]['metrics'].setdefault(name,
+                                  {'data_points': 0, 'samples': []})
+                        for window_start, window_end in windows:
+                            streams = fetch([
+                                'oci', 'monitoring', 'metric-data', 'summarize-metrics-data',
+                                *scope, '--query-text', f'{name}[1h].mean()',
+                                '--start-time', window_start, '--end-time', window_end,
+                                '--resolution', '1h'
+                            ], {**context, 'operation': 'metric_query', 'metric': name,
+                                'start_time': window_start, 'end_time': window_end})
+                            for stream in streams or []:
+                                metric['samples'].append({**stream, **context,
+                                                          'window_start': window_start,
+                                                          'window_end': window_end})
+                                points = stream.get('aggregated-datapoints',
+                                                    stream.get('aggregatedDatapoints', []))
+                                metric['data_points'] += len(points) if isinstance(points, list) else 0
+        return {
+            'collection_period': {'from_date': from_date, 'to_date': to_date,
+                                  'end_exclusive': True},
+            'resolution': '1h', 'regions': regions,
+            'retention_note': 'Hourly metrics are retained for 90 days from request time; '
+                              'missing or historical data is unknown, not zero activity.',
+            'metric_definitions': definitions, 'metrics_by_namespace': metrics,
+            'coverage': coverage
         }
-        
-        print("\n✅ Performance metrics collection complete")
-        return result
-    
+
     def collect_audit_events(self, from_date, to_date):
         """
         Collect audit events from OCI Audit service.
@@ -1065,7 +1058,7 @@ class OCIGrowthCollector:
         
         return result
     
-    def collect_all(self, from_date=None, to_date=None):
+    def collect_all(self, from_date=None, to_date=None, cost_data=None):
         """
         Collect all growth-related data including performance metrics, audit events, and event rules.
         
@@ -1092,6 +1085,11 @@ class OCIGrowthCollector:
         
         # Collect tag structure data (no date range needed)
         results['compartments'] = self._get_all_compartments()
+        finops = OCIFinOpsCollector(
+            self.tenancy_ocid, self.home_region, self.output_dir,
+            execute_command=self._execute_oci_command
+        )
+        results['finops'] = finops.collect_all(from_date, to_date, cost_data=cost_data)
         results['tag_namespaces'] = self.collect_tag_namespaces()
         results['tag_definitions'] = self.collect_tag_definitions()
         results['tag_defaults'] = self.collect_tag_defaults()
@@ -1152,6 +1150,17 @@ class OCIGrowthCollector:
             f.write(f"Tenancy OCID: {results.get('tenancy_ocid', 'N/A')}\n")
             f.write(f"Home Region: {results.get('home_region', 'N/A')}\n\n")
             
+            if 'finops' in results:
+                finops = results['finops']
+                f.write("FINOPS RESOURCE EVIDENCE\n")
+                f.write(f"Regions Scanned: {len(finops.get('regions', []))}\n")
+                f.write(f"Review Candidates: {len(finops.get('candidates', []))}\n")
+                failures = sum(row.get('status') == 'failed'
+                               for row in finops.get('coverage', []))
+                f.write(f"Failed Source Queries: {failures}\n")
+                f.write("See finops_collection.json for raw evidence and coverage; "
+                        "candidates require owner review.\n\n")
+
             # Compartments
             f.write("-"*70 + "\n")
             f.write("COMPARTMENTS\n")

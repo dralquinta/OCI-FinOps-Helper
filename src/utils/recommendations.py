@@ -22,11 +22,11 @@ class OCIRecommendationsFetcher:
             tenancy_ocid: OCI Tenancy OCID
             region: OCI Region
             output_dir: Output directory for recommendations
-            currency: Target currency for cost display (default: USD)
+            currency: Requested display currency metadata; Advisor estimates remain USD.
         """
         self.tenancy_ocid = tenancy_ocid
         self.region = region
-        self.currency = currency  # Default is USD
+        self.currency = currency  # Requested currency metadata; no conversion is performed.
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.api_endpoint = f"https://optimizer.{region}.oraclecloud.com/20200606/recommendations"
@@ -44,7 +44,7 @@ class OCIRecommendationsFetcher:
         print(f"{'='*70}")
         print(f"API Endpoint: {self.api_endpoint}")
         print(f"Tenancy: {self.tenancy_ocid}")
-        print(f"Currency: {self.currency}")
+        print(f"Configured currency: {self.currency}; Advisor estimates are USD")
         
         spinner = ProgressSpinner("🌐 Contacting Oracle Cloud Advisor...")
         spinner.start()
@@ -80,13 +80,13 @@ class OCIRecommendationsFetcher:
                 if is_auth_error:
                     print("\n💡 Troubleshooting steps:")
                     print("   1. Verify IAM policy grants access to Cloud Advisor:")
-                    print("      allow group <YourGroup> to read cloud-advisor-family in tenancy")
+                    print("      allow group <YourGroup> to read optimizer-api-family in tenancy")
                     print("   2. Confirm the region is subscribed and Cloud Advisor is available")
                     print("   3. Check that you have proper permissions in the tenancy")
                     print("   4. Verify your OCI CLI session is authenticated:")
                     print("      oci session validate --auth security_token")
                     print("\n   Required IAM Policy:")
-                    print("   allow group <YourGroup> to manage cloud-advisor-family in tenancy")
+                    print("   allow group <YourGroup> to read optimizer-api-family in tenancy")
 
                 
                 print(f"\n   Full error output (first 500 chars):")
@@ -109,11 +109,11 @@ class OCIRecommendationsFetcher:
             if isinstance(api_data, dict) and 'items' in api_data:
                 items = api_data['items']
                 print(f"✅ Success: Retrieved {len(items)} recommendations")
-                return api_data
+                return self._enrich_resource_actions(api_data)
             
             if isinstance(api_data, list):
                 print(f"✅ Success: Retrieved {len(api_data)} recommendations (list format)")
-                return {"items": api_data}
+                return self._enrich_resource_actions({"items": api_data})
             
             print("❌ Unexpected API response format")
             return None
@@ -133,6 +133,39 @@ class OCIRecommendationsFetcher:
             print(f"❌ Failed to fetch recommendations: {e}")
             return None
     
+    def _enrich_resource_actions(self, data):
+        """Collect Advisor evidence without losing summaries on a partial failure."""
+        coverage = {'status': 'failed', 'region': self.region}
+        data['resource_actions'] = []
+        data.setdefault('coverage', {})['resource_actions'] = coverage
+        data.setdefault('metadata', {}).update({
+            'advisor_savings_currency': 'USD',
+            'configured_currency': self.currency,
+        })
+        try:
+            result = subprocess.run(
+                ['oci', 'optimizer', 'resource-action-summary', 'list',
+                 '--compartment-id', self.tenancy_ocid,
+                 '--compartment-id-in-subtree', 'true',
+                 '--include-resource-metadata', 'true',
+                 '--region', self.region, '--all', '--output', 'json'],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                raise ValueError(result.stderr[:500] or f'OCI CLI exit {result.returncode}')
+            response = json.loads(result.stdout)
+            actions = response.get('data', response) if isinstance(response, dict) else response
+            if isinstance(actions, dict):
+                actions = actions.get('items')
+            if not isinstance(actions, list) or any(not isinstance(action, dict) for action in actions):
+                raise ValueError('Unexpected resource action response format')
+            data['resource_actions'] = actions
+            coverage['status'] = 'complete'
+        except (subprocess.SubprocessError, OSError, ValueError) as error:
+            coverage['error'] = str(error)
+            print(f"Resource action collection incomplete: {error}")
+        return data
+
     def generate_category_summary(self, items):
         """Generate summary by category with actionable insights."""
         categories = {}
@@ -175,7 +208,8 @@ class OCIRecommendationsFetcher:
         """
         items = recommendations_data.get('items', [])
         
-        if not items:
+        if (not items and not recommendations_data.get('resource_actions')
+                and not recommendations_data.get('coverage')):
             return "No recommendations available at this time.\n"
         
         report_lines = []
@@ -193,8 +227,8 @@ class OCIRecommendationsFetcher:
         critical_count = sum(1 for item in items if item.get('importance') == 'CRITICAL')
         high_count = sum(1 for item in items if item.get('importance') == 'HIGH')
         
-        # Always use the configured currency (default: USD)
-        currency = self.currency
+        # Advisor estimates are USD; --currency does not convert them.
+        currency = 'USD'
         
         # EXECUTIVE SUMMARY
         report_lines.append("━" * 80)
@@ -283,6 +317,26 @@ class OCIRecommendationsFetcher:
             
             report_lines.append("")
         
+        # Raw per-resource actions are evidence for review, not authorization to mutate.
+        report_lines.append("RESOURCE ACTION EVIDENCE (REVIEW BEFORE IMPLEMENTATION)")
+        report_lines.append("Savings below are USD estimates; do not add them to category totals.")
+        for action in recommendations_data.get('resource_actions', []):
+            report_lines.append(f"Action ID:       {action.get('id', 'UNKNOWN')}")
+            report_lines.append(f"Recommendation:  {action.get('recommendation-id', 'UNKNOWN')}")
+            report_lines.append(f"Resource ID:     {action.get('resource-id', 'UNKNOWN')}")
+            report_lines.append(f"Resource Type:   {action.get('resource-type', 'UNKNOWN')}")
+            report_lines.append(f"Action:          {action.get('action', 'UNKNOWN')}")
+            report_lines.append(f"Status:          {action.get('status', 'UNKNOWN')}")
+            saving = action.get('estimated-cost-saving')
+            report_lines.append(f"Savings:         {saving if saving is not None else 'UNKNOWN'} USD/month")
+            report_lines.append(f"Metadata:        {json.dumps(action.get('metadata', {}), sort_keys=True)}")
+            report_lines.append("")
+        coverage = recommendations_data.get('coverage', {}).get('resource_actions', {})
+        if coverage:
+            report_lines.append(f"Resource action coverage: {json.dumps(coverage, sort_keys=True)}")
+        report_lines.append(f"Configured currency: {self.currency} (Advisor estimates remain USD)")
+        report_lines.append("")
+
         # FOOTER
         report_lines.append("━" * 80)
         report_lines.append("HOW TO IMPLEMENT RECOMMENDATIONS")
@@ -561,8 +615,8 @@ class OCIRecommendationsFetcher:
                 items = recommendations.get('items', [])
                 if items:
                     total_savings = sum(float(item.get('estimated-cost-saving', 0)) for item in items)
-                    # Always use configured currency (default: USD)
-                    currency = self.currency
+                    # Advisor estimates are USD; requested currency does not convert them.
+                    currency = 'USD'
                     
                     print(f"\n💰 Total Potential Savings: {total_savings:,.2f} {currency}/month")
                     print(f"📊 Total Recommendations: {len(items)}")

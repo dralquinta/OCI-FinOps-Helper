@@ -173,7 +173,7 @@ The script generates the following files in the working directory:
 - Detailed explanations: "What This Means" section for each recommendation
 - Step-by-step actions: Specific implementation steps
 - CLI commands: Exact OCI CLI commands ready to execute
-- Estimated savings in USD (or custom currency)
+- Estimated Advisor savings in USD (no currency conversion)
 
 ### 6. recommendations.json
 **Raw JSON recommendations** for programmatic access and automation.
@@ -203,7 +203,7 @@ Skip cost/usage collection and fetch only recommendations (completes in seconds)
 
 ### Custom Currency
 
-Change currency display (default: USD):
+Record the requested display currency as metadata (default: USD). Advisor estimates remain USD; this option does not perform currency conversion:
 
 ```bash
 ./collector.sh <tenancy_ocid> <region> <from_date> <to_date> \
@@ -294,6 +294,8 @@ The growth collection feature analyzes six key aspects of your OCI tagging:
 - **Trend Analysis:** Track tagging patterns over time
 
 See `docs/GROWTH_COLLECTION.md` for detailed documentation.
+
+Growth collection also gathers regional FinOps resource inventory, block/boot attachment evidence, and complete available monitoring streams. Cloud Advisor collection includes affected-resource actions and savings metadata. See [FinOps collection](docs/FINOPS_COLLECTION.md) for read-only collection modes, outputs, permissions, coverage limits, and reduction review guidance.
 
 ### Stage Control Options
 
