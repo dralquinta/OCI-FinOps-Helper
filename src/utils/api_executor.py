@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 from .progress import ProgressSpinner
 
 
@@ -57,26 +58,46 @@ class OCIAPIExecutor:
         
         result = None
         try:
-            # Execute OCI CLI raw-request
-            result = subprocess.run(
-                [
-                    'oci', 'raw-request',
-                    '--http-method', 'POST',
-                    '--target-uri', self.api_endpoint,
-                    '--request-body', f'file://{request_file}',
-                    '--output', 'json'
-                ],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            
-            # Stop spinner
+            # Usage queries paginate even though raw-request has no --all option.
+            command = [
+                'oci', 'raw-request', '--http-method', 'POST',
+                '--target-uri', self.api_endpoint,
+                '--request-body', f'file://{request_file}',
+                '--region', self.home_region, '--output', 'json'
+            ]
+            items = []
+            seen_pages = set()
+            first_data = None
+            while True:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+                if result.returncode != 0:
+                    # Never pass incomplete costs to downstream savings reports.
+                    print(f"❌ API page failed: {result.stderr[:300]}")
+                    return None
+                response = json.loads(result.stdout)
+                page_data = response.get('data', response)
+                if not isinstance(page_data, dict) or not isinstance(page_data.get('items'), list):
+                    print("❌ Unexpected Usage API page format")
+                    return None
+                if first_data is None:
+                    first_data = dict(page_data)
+                items.extend(page_data['items'])
+                headers = response.get('headers', {})
+                next_page = next((value for key, value in headers.items()
+                                  if key.lower() == 'opc-next-page'), None)
+                if not next_page:
+                    break
+                if next_page in seen_pages:
+                    print("❌ Usage API repeated its page token")
+                    return None
+                seen_pages.add(next_page)
+                command[command.index('--target-uri') + 1] = (
+                    self.api_endpoint + '?' + urlencode({'page': next_page})
+                )
+            first_data['items'] = items
+            response = {'data': first_data}
             spinner.stop()
-            
-            # Clean up temp file
-            request_file.unlink()
-            
+
             if result.returncode != 0:
                 print(f"❌ API call failed: {result.stderr}")
                 print(f"\n📋 Debug information:")
@@ -86,8 +107,7 @@ class OCIAPIExecutor:
                 return None
             
             # Parse response
-            response = json.loads(result.stdout)
-            
+            # All pages were parsed above.
             # Extract data first
             api_data = response.get('data', response)
             
@@ -165,6 +185,9 @@ class OCIAPIExecutor:
             print(f"   Exception type: {type(e).__name__}")
             print(f"   Exception message: {str(e)}")
             return None
+        finally:
+            spinner.stop()
+            request_file.unlink(missing_ok=True)
     
     def make_parallel_calls(self, calls):
         """

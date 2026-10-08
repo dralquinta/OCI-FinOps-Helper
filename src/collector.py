@@ -13,11 +13,19 @@ import argparse
 from pathlib import Path
 import pandas as pd
 
-from utils.progress import ProgressSpinner, ProgressTracker
-from utils.executor import OCIMetadataFetcher
-from utils.api_executor import OCIAPIExecutor
-from utils.recommendations import OCIRecommendationsFetcher
-from utils.growth_collector import OCIGrowthCollector
+# Support both direct CLI execution and package imports for regression tests.
+if __package__:
+    from .utils.progress import ProgressSpinner, ProgressTracker
+    from .utils.executor import OCIMetadataFetcher
+    from .utils.api_executor import OCIAPIExecutor
+    from .utils.recommendations import OCIRecommendationsFetcher
+    from .utils.growth_collector import OCIGrowthCollector
+else:
+    from utils.progress import ProgressSpinner, ProgressTracker
+    from utils.executor import OCIMetadataFetcher
+    from utils.api_executor import OCIAPIExecutor
+    from utils.recommendations import OCIRecommendationsFetcher
+    from utils.growth_collector import OCIGrowthCollector
 
 
 class OCICostCollector:
@@ -236,6 +244,7 @@ class OCICostCollector:
         data1 = None
         data2 = None
         df_merged = None
+        collection_failed = False
         
         # First API call - COST query with service details
         if not skip_cost:
@@ -247,7 +256,7 @@ class OCICostCollector:
             
             if data1 is None:
                 print("\n❌ Failed to retrieve cost data")
-                return False
+                collection_failed = True
         
         # Second API call - USAGE query with platform details
         if not skip_usage:
@@ -259,59 +268,39 @@ class OCICostCollector:
             
             if data2 is None:
                 print("\n❌ Failed to retrieve usage data")
-                return False
+                collection_failed = True
         
         # Merge and enrich
-        if not (skip_cost or skip_usage):
+        if data1 is not None and data2 is not None:
             try:
                 if skip_enrichment:
                     print("\n⚠️  Skipping enrichment - saving basic merged data only")
                     # Still need to do basic merge even if skipping enrichment
                 df_merged = self.merge_and_enrich(data1, data2)
                 
-                # Enrich with growth collection tag data if flag is enabled
-                if growth_collection and df_merged is not None:
-                    print(f"\n{'='*70}")
-                    print("🌱 Running Growth Collection - Tag Analysis")
-                    print(f"{'='*70}")
-                    
-                    growth_collector_obj = OCIGrowthCollector(
-                        tenancy_ocid=self.tenancy_ocid,
-                        home_region=self.home_region,
-                        output_dir=str(self.output_dir)
-                    )
-                    
-                    try:
-                        # Collect tag data
-                        growth_collector_obj.collect_all(
-                            from_date=self.from_date,
-                            to_date=self.to_date
-                        )
-                        
-                        # Enrich the merged dataframe with tag information
-                        print(f"\n{'='*70}")
-                        print("🔄 Enriching cost/usage data with tag information")
-                        print(f"{'='*70}")
-                        
-                        df_merged = growth_collector_obj.enrich_dataframe_with_tags(df_merged)
-                        
-                        # Re-save the enriched dataframe to output_merged.csv
-                        output_merged = self.output_dir / 'output_merged.csv'
-                        df_merged.to_csv(output_merged, index=False)
-                        print(f"✅ Tag-enriched data saved to {output_merged}")
-                        
-                    except Exception as e:
-                        print(f"\n⚠️  Warning: Growth collection/enrichment failed: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        print("Continuing with unenriched data...")
-                    
             except Exception as e:
                 print(f"\n❌ Merge and enrichment failed: {e}")
                 import traceback
                 traceback.print_exc()
-                return False
+                collection_failed = True
         
+        # Inventory collection must work even when cost/usage is skipped or fails.
+        if growth_collection:
+            growth_collector_obj = OCIGrowthCollector(
+                tenancy_ocid=self.tenancy_ocid, home_region=self.home_region,
+                output_dir=str(self.output_dir)
+            )
+            try:
+                growth_collector_obj.collect_all(
+                    from_date=self.from_date, to_date=self.to_date, cost_data=data1
+                )
+                if df_merged is not None:
+                    df_merged = growth_collector_obj.enrich_dataframe_with_tags(df_merged)
+                    df_merged.to_csv(self.output_dir / 'output_merged.csv', index=False)
+            except Exception as error:
+                print(f"⚠️ Growth/FinOps collection failed: {error}")
+                collection_failed = True
+
         # Fetch cost-saving recommendations from Cloud Advisor
         if not skip_recommendations:
             print(f"\n{'='*70}")
@@ -334,7 +323,7 @@ class OCICostCollector:
         
         # Success summary
         print(f"\n{'='*70}")
-        print("🎉 SUCCESS!")
+        print("⚠️ PARTIAL COLLECTION" if collection_failed else "🎉 SUCCESS!")
         print(f"{'='*70}")
         print(f"📁 Output directory: {self.output_dir.resolve()}")
         print("\n📋 Output files:")
@@ -349,13 +338,16 @@ class OCICostCollector:
         if not skip_recommendations:
             print(f"  - {self.output_dir}/recommendations.out: Actionable cost-saving recommendations")
             print(f"  - {self.output_dir}/recommendations.json: Raw recommendations JSON")
-        if growth_collection and not (skip_cost or skip_usage):
+        if growth_collection:
             print(f"  - {self.output_dir}/growth_collection_tags.json: Complete tag analysis data")
-            print(f"  - {self.output_dir}/growth_collection_summary.txt: Tag analysis summary")
+            print(f"  - {self.output_dir}/growth_collection_summary.txt: Evidence summary")
+            print(f"  - {self.output_dir}/finops_collection.json: Regional inventory and coverage")
+            print(f"  - {self.output_dir}/finops_candidates.csv: Resource reduction review candidates")
+            print(f"  - {self.output_dir}/finops_summary.txt: FinOps scope and candidate summary")
         if not (skip_cost or skip_usage):
             print(f"  - {self.output_dir}/request_*.json: API request payloads")
         
-        return True
+        return not collection_failed
 
 
 def main():
@@ -369,14 +361,14 @@ def main():
     parser.add_argument('home_region', help='Home region (e.g., us-ashburn-1)')
     parser.add_argument('from_date', help='Start date (YYYY-MM-DD)')
     parser.add_argument('to_date', help='End date (YYYY-MM-DD)')
-    parser.add_argument('--currency', default='USD', help='Currency for recommendations (default: USD)')
+    parser.add_argument('--currency', default='USD', help='Requested currency metadata; Advisor estimates remain USD (no conversion)')
     parser.add_argument('--skip-cost', action='store_true', help='Skip cost data collection')
     parser.add_argument('--skip-usage', action='store_true', help='Skip usage data collection')
     parser.add_argument('--skip-enrichment', action='store_true', help='Skip instance metadata enrichment')
     parser.add_argument('--skip-recommendations', action='store_true', help='Skip recommendations collection')
     parser.add_argument('--only-recommendations', action='store_true', help='Only fetch recommendations (skip all other stages)')
     parser.add_argument('--growth-collection', action='store_true', 
-                        help='Collect growth-related data (tag namespaces, definitions, defaults, cost-tracking tags)')
+                        help='Collect tags and regional FinOps inventory, attachments, and monitoring evidence')
     parser.add_argument('--only-growth', action='store_true', 
                         help='Only run growth collection (skip cost/usage data collection)')
     

@@ -41,3 +41,15 @@ External OCI APIs are mocked. No pre-existing tests directory; new suite establi
 
 ## Tool availability
 Tokensave tools unavailable; use targeted file reads and searches.
+
+## Additional parallel slice
+- advisor_enrichment owns only `src/utils/recommendations.py` and `tests/utils/test_recommendations.py`; root relinquishes these files.
+
+## Final implementation notes
+Search uses explicit CLI --page traversal because --all is unsupported. The growth CLI callback preserves Search's top-level pagination envelope. Search partial pages retain available records with failed coverage. Final collector suite covers malformed identifiers and retained raw costs.
+Modified `collector.sh` help/output text as part of integration; no new flags or authentication mechanism.
+Additional output validation covers growth summary candidate/failure counts.
+Tracking commits: `8fe6c59`, `74b997c`.
+
+## Review steering
+Checked PR comments, inline comments and reviews during work. Only the agent-authored tracking update was present; no external steering pending.
