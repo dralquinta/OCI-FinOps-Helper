@@ -4,7 +4,7 @@ Issue: https://github.com/dralquinta/OCI-FinOps-Helper/issues/6
 Branch: `6-enhance-collection-to-detect-unused-resources-for-forced-reduction`
 Base: `develop`
 Approval: user approved API-backed implementation plan. SDD disabled.
-Tracking PR: pending.
+Tracking PR: https://github.com/dralquinta/OCI-FinOps-Helper/pull/7
 
 ## Plan and rationale
 1. Collect regional Search inventory, compute, block/boot volumes and attachments across accessible active compartments, including root. Preserve raw evidence and structured coverage.
