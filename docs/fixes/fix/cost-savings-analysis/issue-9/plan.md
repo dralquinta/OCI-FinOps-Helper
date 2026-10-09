@@ -1,6 +1,6 @@
 # Issue 9: actionable cost savings walkthrough
 
-Approved scope: add a new self-guided notebook without modifying the existing FinOps notebook. Tracking coordinator: https://github.com/dralquinta/OCI-FinOps-Helper/issues/10. Tracking PR: pending.
+Approved scope: add a new self-guided notebook without modifying the existing FinOps notebook. Tracking coordinator: https://github.com/dralquinta/OCI-FinOps-Helper/issues/10. Tracking PR: https://github.com/dralquinta/OCI-FinOps-Helper/pull/13.
 
 ## Plan
 1. Add behavioral tests for authoritative raw costs, currency separation, refunds, input validation, optional evidence, Advisor overlap, and notebook execution from both supported working directories.
