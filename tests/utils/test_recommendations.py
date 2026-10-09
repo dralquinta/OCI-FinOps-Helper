@@ -10,6 +10,14 @@ from src.utils.recommendations import OCIRecommendationsFetcher
 
 
 class RecommendationsEvidenceTests(unittest.TestCase):
+    def test_resource_action_amount_is_rounded_only_in_report(self):
+        data = {'items': [], 'resource_actions': [
+            {'estimated-cost-saving': 1.235}, {'estimated-cost-saving': None}]}
+        report = self.fetcher.format_actionable_report(data)
+        self.assertIn('Savings:         1.24 USD/month', report)
+        self.assertIn('Savings:         UNKNOWN USD/month', report)
+        self.assertEqual(1.235, data['resource_actions'][0]['estimated-cost-saving'])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

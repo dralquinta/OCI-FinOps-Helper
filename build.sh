@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 BUILD_ENV="${FINOPS_BUILD_ENV:-$ROOT/.build-venv}"
+export PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-$ROOT/build/pyinstaller-cache}"
 python3 -m venv "$BUILD_ENV"
 "$BUILD_ENV/bin/python" -m pip install -r requirements-build.txt
 "$BUILD_ENV/bin/python" scripts/prepare_assets.py build/suite

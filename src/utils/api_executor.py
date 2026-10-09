@@ -4,6 +4,7 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 """
 
 import json
+import time
 import subprocess
 try:
     from ..distribution import run_oci
@@ -211,3 +212,75 @@ class OCIAPIExecutor:
                 from_date=from_date, to_date=to_date
             ) for query_type, group_by_fields, call_name, from_date, to_date in calls]
             return [future.result() for future in futures]
+
+    def collect_to_store(self, store, query_type, group_by_fields, partition, from_date, to_date):
+        """Persist each bounded Usage page before requesting the next page."""
+        request_file = self.output_dir / f'request_{query_type}_{partition}.json'
+        body = {'tenantId': self.tenancy_ocid,
+                'timeUsageStarted': f'{from_date}T00:00:00Z',
+                'timeUsageEnded': f'{to_date}T00:00:00Z',
+                'granularity': 'DAILY', 'queryType': query_type,
+                'groupBy': group_by_fields, 'compartmentDepth': 4}
+        request_file.write_text(json.dumps(body))
+        query = {'limit': 1000}
+        seen_pages = set()
+        page_seq = 0
+        retries = 0
+        try:
+            while True:
+                command = ['oci', 'raw-request', '--http-method', 'POST',
+                           '--target-uri', self.api_endpoint + '?' + urlencode(query),
+                           '--request-body', f'file://{request_file}',
+                           '--region', self.home_region, '--output', 'json']
+                result = run_oci(command, capture_output=True, text=True, timeout=300)
+                if result.returncode:
+                    print(f'{query_type} page failed for {partition}: {result.stderr[:200]}')
+                    return False
+                response = json.loads(result.stdout)
+                data = response.get('data', response)
+                status_value = response.get('status', '')
+                try:
+                    status = int(str(status_value).split()[0])
+                except (ValueError, IndexError):
+                    status = 0
+                headers = response.get('headers', {})
+                headers = headers if isinstance(headers, dict) else {}
+                if status == 429 or status in (500, 502, 503, 504):
+                    if retries < 4:
+                        delay = 2 ** (retries + 1)
+                        retry_after = next((value for key, value in headers.items()
+                                            if key.lower() == 'retry-after'), None)
+                        try:
+                            delay = max(delay, min(30, max(0, float(retry_after))))
+                        except (TypeError, ValueError):
+                            pass
+                        retries += 1
+                        print(f'{query_type} HTTP {status} for {partition}; retry {retries}/4')
+                        time.sleep(delay)
+                        continue
+                if not isinstance(data, dict) or not isinstance(data.get('items'), list):
+                    code = data.get('code', 'InvalidPayload') if isinstance(data, dict) else 'InvalidPayload'
+                    code = code if isinstance(code, str) and code.replace('_', '').isalnum() else 'InvalidPayload'
+                    print(f'Invalid {query_type} page for {partition}: HTTP {status}, code {code}')
+                    return False
+                if status >= 400:
+                    print(f'{query_type} HTTP {status} for {partition}; collection incomplete')
+                    return False
+                store.add_page(query_type, partition, page_seq, data['items'],
+                               metadata={key: value for key, value in data.items() if key != 'items'})
+                page_seq += 1
+                retries = 0
+                token = next((value for key, value in headers.items()
+                              if key.lower() == 'opc-next-page'), None)
+                if not token:
+                    return True
+                if not isinstance(token, str) or token in seen_pages:
+                    print(f'Repeated or invalid {query_type} page token for {partition}')
+                    return False
+                seen_pages.add(token)
+                query['page'] = token
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
+            print(f'{query_type} collection failed for {partition}: {type(error).__name__}')
+            return False
+        finally:
+            request_file.unlink(missing_ok=True)

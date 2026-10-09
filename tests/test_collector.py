@@ -85,7 +85,7 @@ class CollectionPerformanceTests(unittest.TestCase):
             barrier.wait(timeout=3)
             return {'items': []}
         with patch.object(self.collector, 'make_api_call', side_effect=query), patch.object(self.collector, 'merge_and_enrich', return_value=pd.DataFrame()), contextlib.redirect_stdout(io.StringIO()):
-            self.assertTrue(self.collector.collect(skip_recommendations=True))
+            self.assertTrue(self.collector.collect(skip_recommendations=True, growth_collection=False))
 
     def test_metadata_cache_reuses_successes_and_retries_failures(self):
         metadata = {self.instance: {'shape': 'shape', 'resourceName': 'name'}}
@@ -129,9 +129,15 @@ class CollectionIntegrationTests(unittest.TestCase):
         self.assertIs(raw, growth.return_value.collect_all.call_args.kwargs['cost_data'])
         growth.return_value.collect_all.assert_called_once()
 
-    def test_normal_collection_does_not_add_growth_api_calls(self):
+    def test_normal_collection_enables_growth_by_default(self):
         with patch('src.collector.OCIGrowthCollector') as growth, contextlib.redirect_stdout(io.StringIO()):
             self.assertTrue(self.collector.collect(skip_cost=True, skip_usage=True, skip_recommendations=True))
+        growth.return_value.collect_all.assert_called_once()
+
+    def test_growth_opt_out_does_not_add_growth_api_calls(self):
+        with patch('src.collector.OCIGrowthCollector') as growth, contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(self.collector.collect(skip_cost=True, skip_usage=True, skip_recommendations=True,
+                                                   growth_collection=False))
         growth.assert_not_called()
 
     def test_inventory_still_runs_when_requested_cost_collection_fails(self):

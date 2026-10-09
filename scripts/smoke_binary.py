@@ -8,6 +8,50 @@ import tarfile
 import tempfile
 
 
+def offline_commands():
+    """Load every collector service without configuration or network access."""
+    commands = [('iam', 'region', 'list'), ('compute', 'instance', 'get'),
+                ('bv', 'volume', 'list'), ('usage-api', 'usage-summary', 'request-summarized-usages'),
+                ('optimizer', 'resource-action-summary', 'list'),
+                ('search', 'resource', 'structured-search'),
+                ('monitoring', 'metric-data', 'summarize-metrics-data'),
+                ('audit', 'event', 'list'), ('events', 'rule', 'list')]
+    return [['--help'], ['--internal-oci', '--version']] + [
+        ['--internal-oci', *command, '--help'] for command in commands]
+
+
+def smoke_worker(binary, environment, directory):
+    requests = [['iam', 'region', 'list', '--help'],
+                ['compute', 'instance', 'get', '--help'],
+                ['iam', 'region', 'list', '--help'],
+                ['iam', 'region', 'list']]
+    result = subprocess.run([str(binary), '--internal-oci-worker'],
+                            input=''.join(json.dumps({'arguments': arguments}) + '\n' for arguments in requests),
+                            env=environment, cwd=directory, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise RuntimeError(result.stderr + result.stdout)
+    responses = [json.loads(line) for line in result.stdout.splitlines()]
+    assert len(responses) == len(requests), 'Persistent CLI must return each response'
+    assert all(row['returncode'] == 0 and row['stdout'] for row in responses[:3]), 'Persistent CLI command failed'
+    assert responses[0]['stdout'] == responses[2]['stdout'], 'Repeated service help must remain unchanged'
+    failure = responses[3]
+    assert isinstance(failure['returncode'], int) and failure['returncode'] != 0, \
+        'Local worker authentication failure must have a numeric exit status'
+    assert any(marker in failure['stderr'] for marker in ('Abort:', 'Aborted!', 'Could not find config file')), \
+        'Worker authentication failure must preserve stderr diagnostics'
+
+
+def check_missing_config(result):
+    assert result.returncode != 0, 'Missing OCI configuration must fail locally'
+    diagnostic = result.stdout + result.stderr
+    assert not any(marker in diagnostic for marker in ('ImportError', 'ModuleNotFoundError')), \
+        'Embedded OCI dependencies must load successfully'
+    assert any(marker in diagnostic for marker in ('Abort:', 'Aborted!', 'Could not find config file')), \
+        'Embedded OCI must reach local missing-config diagnostics, rather than fail to import'
+    assert 'Collection failed; no success archive created.' in diagnostic, \
+        'Local authentication failure must propagate to collection status'
+
+
 def smoke(binary):
     binary = Path(binary).resolve()
     with tempfile.TemporaryDirectory(prefix='finops-binary-smoke-') as directory:
@@ -16,16 +60,21 @@ def smoke(binary):
         empty_path.mkdir()
         environment = {key: value for key, value in os.environ.items() if not key.startswith('OCI_')}
         environment.update({'PATH': str(empty_path), 'HOME': str(directory), 'OCI_CLI_AUTH': 'api_key', 'OCI_CLI_CONFIG_FILE': str(directory / 'missing-config')})
-        for arguments in [['--help'], ['--internal-oci', '--version'], ['--internal-oci', 'compute', 'instance', 'get', '--help'], ['--internal-oci', 'optimizer', 'resource-action-summary', 'list', '--help'], ['--internal-oci', 'monitoring', 'metric-data', 'summarize-metrics-data', '--help']]:
+        for arguments in offline_commands():
             result = subprocess.run([str(binary), *arguments], env=environment, cwd=directory, capture_output=True, text=True, timeout=120)
             if result.returncode:
                 raise RuntimeError(result.stderr + result.stdout)
+            if arguments == ['--help']:
+                for option in ('--tenancy-ocid', '--home-region', '--from', '--to', '--no-growth-collection'):
+                    assert option in result.stdout, 'Binary help must expose ' + option
             print('PASS: ' + ' '.join(arguments), flush=True)
+        smoke_worker(binary, environment, directory)
+        print('PASS: persistent embedded CLI repeats services without import/registration loss', flush=True)
         cache = directory / 'cache'
         cache.mkdir()
         cache_payload = '{"version": 1, "entries": {}}'
         (cache / 'instance_metadata_cache.json').write_text(cache_payload)
-        result = subprocess.run([str(binary), 'example-tenancy', 'us-ashburn-1', '2026-01-01', '2026-02-01', '--skip-cost', '--skip-usage', '--skip-enrichment', '--skip-recommendations', '--cache-dir', str(cache)], env=environment, cwd=directory, capture_output=True, text=True, timeout=120)
+        result = subprocess.run([str(binary), '--tenancy-ocid', 'example-tenancy', '--home-region', 'us-ashburn-1', '--from', '2026-01-01', '--to', '2026-02-01', '--no-growth-collection', '--skip-cost', '--skip-usage', '--skip-enrichment', '--skip-recommendations', '--cache-dir', str(cache)], env=environment, cwd=directory, capture_output=True, text=True, timeout=120)
         if result.returncode:
             raise RuntimeError(result.stderr + result.stdout)
         archives = list(directory.glob('*.tar.gz'))
@@ -43,8 +92,7 @@ def smoke(binary):
         assert len(list(directory.glob('*.tar.gz'))) == 1, 'Failed collection must not emit an archive'
         # Exercise frozen parent -> OCI child dispatch with guaranteed local auth failure.
         missing_config = subprocess.run([str(binary), 'example-tenancy', 'us-ashburn-1', '2026-01-01', '2026-02-01', '--only-recommendations', '--cache-dir', str(cache)], env=environment, cwd=directory, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
-        assert missing_config.returncode != 0, 'Missing OCI configuration must fail locally'
-        assert 'API call failed: Abort:' in missing_config.stdout, 'Embedded OCI child must reach local missing-config prompt and abort on EOF'
+        check_missing_config(missing_config)
         assert len(list(directory.glob('*.tar.gz'))) == 1, 'Failed OCI child must not emit an archive'
         assert (cache / 'instance_metadata_cache.json').read_text() == cache_payload
         print('PASS: frozen OCI child reached local config error without archive/cache overwrite', flush=True)

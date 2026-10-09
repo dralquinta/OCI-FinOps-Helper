@@ -112,6 +112,13 @@ run_collector() {
 
 # Main execution
 main() {
+    # Help must work before authentication or environment setup.
+    for argument in "$@"; do
+        if [ "$argument" = "--help" ] || [ "$argument" = "-h" ]; then
+            python3 "$PYTHON_SCRIPT" --help
+            return 0
+        fi
+    done
     log_info "Starting OCI Cost Report Collector v2.2.1"
     
     # Validate arguments
@@ -121,6 +128,7 @@ main() {
         echo "OCI Cost Report Collector v2.2.1"
         echo ""
         echo "Usage: $0 <tenancy_ocid> <home_region> <from_date> <to_date> [OPTIONS]"
+        echo "   or: $0 --tenancy-ocid <OCID> --home-region <REGION> --from <YYYY-MM-DD> --to <YYYY-MM-DD> [OPTIONS]"
         echo ""
         echo "Required Arguments:"
         echo "  tenancy_ocid  : OCI Tenancy OCID"
@@ -130,7 +138,8 @@ main() {
         echo ""
         echo "Optional Flags:"
         echo "  --only-recommendations  : Fetch only recommendations (fast, skips cost/usage)"
-        echo "  --growth-collection     : Collect tags, regional inventory, attachments and Monitoring evidence"
+        echo "  --growth-collection     : Collect tags, FinOps inventory and Monitoring evidence (enabled by default)"
+        echo "  --no-growth-collection  : Disable growth/FinOps collection"
         echo "  --only-growth           : Only run growth collection (skip cost/usage data)"
         echo "  --currency <CODE>       : Requested currency metadata; Advisor savings remain USD (no conversion)"
         echo "  --skip-cost             : Skip cost data collection"

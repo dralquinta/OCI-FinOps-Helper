@@ -8,6 +8,22 @@ from src.utils.finops_collector import OCIFinOpsCollector
 
 
 class FinOpsCollectorTests(unittest.TestCase):
+    def test_candidate_csv_formats_costs_without_rounding_raw_evidence(self):
+        costs = {'items': [
+            {'resourceId': 'orphan', 'region': 'r1', 'currency': 'USD',
+             'computedAmount': 1.235}]}
+        result = self.collect(costs)
+        candidate = next(item for item in result['candidates']
+                         if item['resource_id'] == 'orphan' and item['region'] == 'r1')
+        self.assertEqual([{'currency': 'USD', 'computed_amount': 1.235}], candidate['costs'])
+        folder = Path(self.directory.name)
+        with (folder / 'finops_candidates.csv').open() as stream:
+            exported = next(row for row in csv.DictReader(stream)
+                            if row['resource_id'] == 'orphan' and row['region'] == 'r1')
+        self.assertEqual([{'currency': 'USD', 'computed_amount': '1.24'}], json.loads(exported['costs']))
+        raw = json.loads((folder / 'finops_collection.json').read_text())
+        self.assertEqual(result, raw)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -171,3 +187,49 @@ class FinOpsCollectorTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RegionalInventoryPerformanceTests(unittest.TestCase):
+    def test_region_inventory_overlaps_with_four_worker_bound_and_ordered_merge(self):
+        import threading
+        import time
+        import tempfile
+        from src.utils.finops_collector import OCIFinOpsCollector
+        barrier = threading.Barrier(4)
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+        regions = ['region-' + str(i) for i in range(8)]
+        def execute(command, description):
+            nonlocal active, peak
+            if 'region-subscription' in command:
+                return [{'region-name': region, 'status': 'READY'} for region in reversed(regions)]
+            if 'compartment' in command:
+                return []
+            if 'structured-search' in command:
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    barrier.wait(timeout=2)
+                    time.sleep(0.01)
+                    region = command[command.index('--region')+1]
+                    return {'data': {'items': [{'identifier': 'resource-' + region}]}}
+                finally:
+                    with lock:
+                        active -= 1
+            if 'availability-domain' in command:
+                return [{'name': 'ad'}]
+            if command[1:4] == ['bv', 'volume', 'list']:
+                region = command[command.index('--region')+1]
+                return [{'id': 'volume-' + region, 'lifecycle-state': 'AVAILABLE'}]
+            return []
+        with tempfile.TemporaryDirectory() as directory:
+            result = OCIFinOpsCollector('tenancy', 'home', directory, execute).collect_all()
+        self.assertEqual(4, peak)
+        self.assertTrue(result['discovery_complete'])
+        self.assertEqual(regions, result['regions'])
+        self.assertEqual(regions, [row['region'] for row in result['inventory']['resources']])
+        self.assertEqual(regions, [row['region'] for row in result['candidates']])
+        self.assertEqual(58, len(result['coverage']))
+        self.assertFalse(any(row['status'] == 'failed' for row in result['coverage']))
