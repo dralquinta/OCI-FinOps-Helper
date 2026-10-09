@@ -56,3 +56,14 @@ Root integrates collector, API pages/retries, monetary export, FinOps indexed co
 
 ## Verification complete
 148 system and pinned tests, final executable smoke, seven source-byte matches, synthetic million-row memory gates, complete live cost/usage parity and approved bounded default-growth triage passed. Independent audits found no blockers. Final live runtime 393.77s and peak RSS 1,263.56 MiB; binary 134.71 MiB. Latest ownership slices are complete. Next: scoped commit, push and mark tracking PR ready for review.
+
+## Follow-up: visible streaming progress
+User reports no on-screen feedback from the committed binary. Existing authorization and tracking PR cover this regression correction; reuse this task and branch without further planning approval. Root owns integration, docs, isolated build and safe versioned executable delivery. Performance owns collector/API feedback and new feedback helper plus progress regressions; auditor owns distribution/cache/archive feedback, independent review and executable smoke. No overlapping ownership.
+
+1. Reproduce missing flushed startup/page/stage output and heartbeat behavior with deterministic tests.
+2. Add lightweight thread-safe progress without changing requests, resource bounds, results or CLI arguments.
+3. Verify full regression and actual executable feedback; build separately and install the verified binary alongside the active executable without interrupting its run; commit and update PR.
+
+Source files: src/collector.py, src/utils/api_executor.py, src/utils/feedback.py, src/distribution.py. Tests: tests/test_streaming_progress.py, tests/test_distribution.py, scripts/smoke_binary.py and tests/test_packaging.py. Red step: successful streaming requests currently emit no startup/page status or flushed waiting heartbeat.
+
+Progress follow-up verification is complete: 156 tests in both Python environments, old executable feedback Red and rebuilt executable feedback Green, full executable smoke and 100k memory/cardinality guard. Install the updated artifact as dist/oci-finops-helper-progress while preserving the active canonical executable: PyInstaller reopens its embedded PYZ archive during imports, making replacement during a run unsafe. Source build output retains the canonical name for subsequent builds. Next: commit/push and return PR to ready for review.

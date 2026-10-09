@@ -259,11 +259,17 @@ class OCICostCollector:
         if __package__:
             from .utils.datasets import DiskDatasetStore
             from .utils.parallel import bounded_map
+            from .utils.feedback import report_progress, progress_heartbeat
         else:
             from utils.datasets import DiskDatasetStore
             from utils.parallel import bounded_map
+            from utils.feedback import report_progress, progress_heartbeat
 
+        report_progress('Starting OCI FinOps collection')
+        report_progress(f'Date range: {self.from_date} inclusive to {self.to_date} exclusive; '
+                        f'growth={"enabled" if growth_collection else "disabled"}')
         failed = False
+        report_progress('Preparing bounded billing workspace')
         with DiskDatasetStore() as store:
             api = OCIAPIExecutor(self.tenancy_ocid, self.home_region, output_dir=self.output_dir)
             def jobs():
@@ -281,37 +287,52 @@ class OCICostCollector:
                     partition += 1
             def collect_page_window(job):
                 return api.collect_to_store(store, *job)
+            report_progress('Billing collection: starting COST/USAGE daily windows (up to 4 workers)')
             with ThreadPoolExecutor(max_workers=4) as executor:
                 for success in bounded_map(executor, collect_page_window, jobs(), 4):
                     failed = failed or not success
             cost = None if skip_cost else store.dataset('COST')
             usage = None if skip_usage else store.dataset('USAGE')
+            report_progress(f'Billing collection: finished ({cost.count if cost is not None else 0} COST records; '
+                            f'{usage.count if usage is not None else 0} USAGE records)')
             if not (skip_cost and skip_usage):
-                store.write_raw_json(self.output_dir / 'out.json', {'call1': cost, 'call2': usage})
+                report_progress('Raw billing JSON: saving original records')
+                with progress_heartbeat('Raw billing JSON'):
+                    store.write_raw_json(self.output_dir / 'out.json', {'call1': cost, 'call2': usage})
+                report_progress('Raw billing JSON: saved')
 
             if not skip_cost and not skip_usage and not skip_enrichment:
+                report_progress('Metadata enrichment: loading cached instance metadata')
                 now = time.time()
-                store.load_metadata_cache(self.output_dir / 'instance_metadata_cache.json',
+                cached = store.load_metadata_cache(self.output_dir / 'instance_metadata_cache.json',
                                           self.tenancy_ocid, self.home_region, now)
+                report_progress(f'Metadata enrichment: {cached} fresh cached entries available')
                 missing = iter(store.missing_instance_ids())
                 fetcher = OCIMetadataFetcher(max_workers=4)
                 while True:
                     batch = list(islice(missing, 200))
                     if not batch:
                         break
-                    metadata, successes, failures = fetcher.fetch_metadata(batch)
+                    report_progress(f'Metadata enrichment: requesting batch of {len(batch)} instances')
+                    with progress_heartbeat('Metadata enrichment'):
+                        metadata, successes, failures = fetcher.fetch_metadata(batch)
                     store.add_metadata(metadata, fetched_at=now)
-                    print(f'Metadata batch: {successes} fetched, {failures} unavailable')
-                store.write_metadata_files(self.output_dir, self.tenancy_ocid, self.home_region, now)
+                    report_progress(f'Metadata batch: {successes} fetched, {failures} unavailable')
+                with progress_heartbeat('Metadata cache export'):
+                    store.write_metadata_files(self.output_dir, self.tenancy_ocid, self.home_region, now)
+                report_progress('Metadata enrichment: complete')
 
             growth = None
             if growth_collection:
                 growth = OCIGrowthCollector(tenancy_ocid=self.tenancy_ocid,
                                            home_region=self.home_region, output_dir=str(self.output_dir))
                 try:
-                    growth.collect_all(from_date=self.from_date, to_date=self.to_date, cost_data=cost)
+                    report_progress('Growth/FinOps: starting inventory, tags, metrics and audit collection')
+                    with progress_heartbeat('Growth/FinOps'):
+                        growth.collect_all(from_date=self.from_date, to_date=self.to_date, cost_data=cost)
+                    report_progress('Growth/FinOps: complete')
                 except Exception as error:
-                    print(f'Growth/FinOps collection failed: {error}')
+                    report_progress(f'Growth/FinOps collection failed: {type(error).__name__}')
                     failed = True
 
             if not skip_cost and not skip_usage:
@@ -320,31 +341,41 @@ class OCICostCollector:
                 if growth is not None:
                     enriched_fields = sorted(set(enriched_fields) | {'has_tags', 'tag_count', 'tag_namespaces',
                                              'primary_cost_center', 'primary_environment', 'tags'})
-                first = True
-                for frame in store.iter_merged_chunks(chunk_size=2000):
-                    mode = 'w' if first else 'a'
-                    write_cost_csv(frame, self.output_dir / 'output.csv', mode=mode,
-                                   header=first, fieldnames=fields)
-                    if not skip_enrichment:
-                        metadata = store.lookup_metadata(frame['resourceId'].dropna().unique())
-                        for column in ('shape', 'resourceName'):
-                            if column not in frame:
-                                frame[column] = None
-                            missing_values = frame[column].isna() | frame[column].eq('')
-                            values = frame['resourceId'].map({key: value.get(column) for key, value in metadata.items()})
-                            frame.loc[missing_values & values.notna(), column] = values
-                    if growth is not None:
-                        frame = growth.enrich_dataframe_with_tags(frame)
-                    write_cost_csv(frame, self.output_dir / 'output_merged.csv', mode=mode,
-                                   header=first, fieldnames=enriched_fields)
-                    first = False
-                if first:
-                    write_cost_csv(pd.DataFrame(columns=fields), self.output_dir / 'output.csv')
-                    write_cost_csv(pd.DataFrame(columns=enriched_fields), self.output_dir / 'output_merged.csv')
+                report_progress('CSV export: starting bounded merge and enrichment')
+                with progress_heartbeat('CSV export'):
+                    exported = 0
+                    first = True
+                    for chunk_index, frame in enumerate(store.iter_merged_chunks(chunk_size=2000), 1):
+                        mode = 'w' if first else 'a'
+                        write_cost_csv(frame, self.output_dir / 'output.csv', mode=mode,
+                                       header=first, fieldnames=fields)
+                        if not skip_enrichment:
+                            metadata = store.lookup_metadata(frame['resourceId'].dropna().unique())
+                            for column in ('shape', 'resourceName'):
+                                if column not in frame:
+                                    frame[column] = None
+                                missing_values = frame[column].isna() | frame[column].eq('')
+                                values = frame['resourceId'].map({key: value.get(column) for key, value in metadata.items()})
+                                frame.loc[missing_values & values.notna(), column] = values
+                        if growth is not None:
+                            frame = growth.enrich_dataframe_with_tags(frame)
+                        write_cost_csv(frame, self.output_dir / 'output_merged.csv', mode=mode,
+                                       header=first, fieldnames=enriched_fields)
+                        exported += len(frame)
+                        if first or chunk_index % 10 == 0:
+                            report_progress(f'CSV export: {exported} COST records saved')
+                        first = False
+                    if first:
+                        write_cost_csv(pd.DataFrame(columns=fields), self.output_dir / 'output.csv')
+                        write_cost_csv(pd.DataFrame(columns=enriched_fields), self.output_dir / 'output_merged.csv')
+                    report_progress(f'CSV export: complete ({exported} COST records)')
             if not skip_recommendations:
-                OCIRecommendationsFetcher(tenancy_ocid=self.tenancy_ocid, region=self.home_region,
-                                          output_dir=str(self.output_dir), currency=currency).fetch_and_save()
-        print('PARTIAL COLLECTION' if failed else 'Collection complete')
+                report_progress('Recommendations: starting Oracle Cloud Advisor collection')
+                with progress_heartbeat('Recommendations'):
+                    OCIRecommendationsFetcher(tenancy_ocid=self.tenancy_ocid, region=self.home_region,
+                                              output_dir=str(self.output_dir), currency=currency).fetch_and_save()
+                report_progress('Recommendations: complete')
+        report_progress('PARTIAL COLLECTION' if failed else 'Collection complete')
         return not failed
 
     def collect(self, skip_cost=False, skip_usage=False, skip_enrichment=False, 

@@ -33,3 +33,10 @@ The branch provides the requested CLI and report behavior, bounded billing-data 
 - Final approved bounded default-growth probe: intentionally terminated after the 60-second budget (61.57s elapsed), 639.81 MiB peak process-tree RSS, six processes, no authentication/parameter/import/connection indicators. No archive was expected from the interrupted probe; private probe scratch was cleaned. An exhaustive scan of 31 subscribed regions and 2,186 active child compartments was not requested.
 
 Inventory and attachment safety indexes still scale with discovered resources. Growth duration scales with region/compartment scopes and service permissions; billing-memory benchmarks do not establish a tenancy-independent envelope for exhaustive growth. Scratch and artifact disk use scale with row count. See tdd.md for the chronological Red/Green record and measured limitations.
+
+## Follow-up: streaming progress visibility
+User-observed regression: collection starts silently because the streaming path bypasses legacy banners/spinners. Startup, stage, request, persisted-page counts and completion messages now flush immediately. Slow requests, processing, cache transfers and archiving emit a 30-second heartbeat. Reporting is thread-safe and redacts resource identifiers/control characters; counters remain bounded and exports report first/every ten chunks/final. The request, join, retry and worker semantics remain unchanged.
+
+Validation: 156 tests pass in system and pinned Python, actual rebuilt executable feedback arrives before the process finishes, and all expanded executable checks pass. The 100k COST / 200k USAGE benchmark preserves cardinality and precision at 132.43 MiB collector RSS. Binary size is 141,257,448 bytes, retaining the earlier packaging reduction.
+
+The verified update is installed alongside the current executable as dist/oci-finops-helper-progress. The canonical executable is unchanged to protect the user run: PyInstaller lazily reads its embedded archive and must not have that pathname replaced while running. Future source builds retain the canonical output name.

@@ -139,3 +139,20 @@ Final binary invoked without an explicit growth flag, while skipping already-tes
 - 148 tests pass in system and pinned build environments.
 - Final standalone executable smoke, source-byte verification, synthetic memory benchmark and approved live validations pass within their stated scope.
 - Documentation reflects measured limits; no customer data or machine-local paths are staged.
+
+## Follow-up: missing on-screen feedback
+Diagnosis: the foreground executable matches the committed source. Distribution forwards parent stdout; only OCI worker response payloads are captured intentionally. The streaming early return bypasses legacy startup/spinner reporting and successful page requests emit no feedback. Existing tests verified data/memory semantics and CLI help but did not require visible flushed streaming progress before blocking requests. Red/Green and executable results follow.
+
+## Progress feedback Red / Green
+Performance Red: two missing-output failures before blocking calls and two missing-helper errors. Green: five feedback tests plus streaming/collector/API regressions passed. Messages are thread-safe, flushed and identifier/control-character redacted; 30-second heartbeats use stoppable waits and fixed active-stage threads. Per-page counts use local accumulators; CSV notices are first/every ten chunks/final, with no per-row logging or per-page database counts.
+
+Distribution Red: blocked cache and gzip operations emitted no flushed startup/stage feedback. Green: 21 distribution tests pass, including controlled slow-archive heartbeat. Wrapper feedback begins before workspace/cache operations and covers archive and cache completion. System full suite: 155 passed in 13.287s; pinned full suite: 155 passed in 17.464s. Executable pipe visibility and rebuilt artifact validation pending.
+
+Actual old-binary Red: isolated synthetic missing-configuration probe failed the immediate flushed startup-feedback contract, without changing the user process or executable. New executable verification must pass Popen pipe first-output-before-completion and prior service/worker/archive/cache checks.
+
+Final progress follow-up full regression: 156 tests passed in 14.199s (system) and 18.516s (pinned). The 100k COST / 200k USAGE export retained exact cardinality/precision at 132.43 MiB peak collector RSS and 12.37s; concurrent binary build means this timing is not an isolated overhead comparison. New feedback leaves page retries, billing joins, chunk sizes and worker limits unchanged.
+
+## Progress follow-up executable Green and delivery
+Rebuilt artifact: 141,257,448 bytes, with duplicate SDK source count still zero. The actual Popen pipe check observes startup feedback before process completion; all nine OCI services, worker reuse, archive/cache routing and isolated auth-failure checks pass. Collector, API, distribution, feedback helper and worker packaged source bytes match the checkout.
+
+Installed the verified artifact as dist/oci-finops-helper-progress. The active canonical binary is byte-for-byte unchanged. PyInstaller lazily reopens its executable-embedded PYZ archive, so replacing that pathname while the user run is active would be unsafe. The running process continues with its loaded version; next invocation can use the updated filename with the same arguments.

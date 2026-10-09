@@ -12,6 +12,72 @@ from src.distribution import archive_outputs, extract_suite, oci_command, run_co
 
 
 class DistributionTests(unittest.TestCase):
+    def test_startup_feedback_is_flushed_before_blocked_cache_copy(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        entered, release, flushed = threading.Event(), threading.Event(), threading.Event()
+        class Output(io.StringIO):
+            def flush(self):
+                if 'Preparing collection' in self.getvalue():
+                    flushed.set()
+                super().flush()
+        output = Output()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'cache').mkdir()
+            (root / 'cache/instance_metadata_cache.json').write_text('{"entries": {}}')
+            original_copy = __import__('shutil').copyfile
+            def copy(source, destination):
+                entered.set()
+                release.wait(timeout=2)
+                return original_copy(source, destination)
+            with contextlib.redirect_stdout(output), patch('src.distribution.shutil.copyfile', side_effect=copy):
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    result = executor.submit(run_collection, [], root / 'archives', lambda: None,
+                                             cache_dir=root / 'cache')
+                    try:
+                        self.assertTrue(entered.wait(timeout=1), 'Cache copy did not start')
+                        self.assertTrue(flushed.is_set(), 'Startup feedback was not flushed before cache copy')
+                        self.assertFalse(result.done())
+                    finally:
+                        release.set()
+                    self.assertEqual(0, result.result(timeout=2))
+
+    def test_archive_feedback_is_flushed_before_blocked_compression(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        from src.utils.feedback import progress_heartbeat
+        entered, release, flushed = threading.Event(), threading.Event(), threading.Event()
+        heartbeat = threading.Event()
+        class Output(io.StringIO):
+            def flush(self):
+                if 'Creating collection archive' in self.getvalue():
+                    flushed.set()
+                if 'Creating collection archive: still working' in self.getvalue():
+                    heartbeat.set()
+                super().flush()
+        output = Output()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def archive(source, destination):
+                entered.set()
+                release.wait(timeout=2)
+                destination.write_bytes(b'archive')
+            with contextlib.redirect_stdout(output), patch('src.distribution.archive_outputs', side_effect=archive), \
+                    patch('src.utils.feedback.progress_heartbeat',
+                          side_effect=lambda label: progress_heartbeat(label, interval=0.01)):
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    result = executor.submit(run_collection, [], root / 'archives', lambda: None,
+                                             cache_dir=root / 'cache')
+                    try:
+                        self.assertTrue(entered.wait(timeout=1), 'Archive compression did not start')
+                        self.assertTrue(flushed.is_set(), 'Archive feedback was not flushed before compression')
+                        self.assertTrue(heartbeat.wait(timeout=1), 'Blocked compression has no heartbeat')
+                        self.assertFalse(result.done())
+                    finally:
+                        release.set()
+                    self.assertEqual(0, result.result(timeout=2))
+
     def test_named_collection_arguments_create_archive_with_default_growth(self):
         arguments = ['--tenancy-ocid', 'ocid1.tenancy.oc1..test',
                      '--home-region', 'us-ashburn-1',

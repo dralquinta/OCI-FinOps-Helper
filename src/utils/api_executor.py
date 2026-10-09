@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode
 from .progress import ProgressSpinner
+from .feedback import progress_heartbeat, report_progress
 
 
 class OCIAPIExecutor:
@@ -226,15 +227,19 @@ class OCIAPIExecutor:
         seen_pages = set()
         page_seq = 0
         retries = 0
+        window_records = 0
         try:
             while True:
                 command = ['oci', 'raw-request', '--http-method', 'POST',
                            '--target-uri', self.api_endpoint + '?' + urlencode(query),
                            '--request-body', f'file://{request_file}',
                            '--region', self.home_region, '--output', 'json']
-                result = run_oci(command, capture_output=True, text=True, timeout=300)
+                label = f'Billing {query_type} {from_date} to {to_date}: requesting page {page_seq + 1}'
+                report_progress(label)
+                with progress_heartbeat(label):
+                    result = run_oci(command, capture_output=True, text=True, timeout=300)
                 if result.returncode:
-                    print(f'{query_type} page failed for {partition}: {result.stderr[:200]}')
+                    report_progress(f'{query_type} page failed for {partition}: {result.stderr[:200]}')
                     return False
                 response = json.loads(result.stdout)
                 data = response.get('data', response)
@@ -255,32 +260,37 @@ class OCIAPIExecutor:
                         except (TypeError, ValueError):
                             pass
                         retries += 1
-                        print(f'{query_type} HTTP {status} for {partition}; retry {retries}/4')
+                        report_progress(f'{query_type} HTTP {status} for {partition}; retry {retries}/4')
                         time.sleep(delay)
                         continue
                 if not isinstance(data, dict) or not isinstance(data.get('items'), list):
                     code = data.get('code', 'InvalidPayload') if isinstance(data, dict) else 'InvalidPayload'
                     code = code if isinstance(code, str) and code.replace('_', '').isalnum() else 'InvalidPayload'
-                    print(f'Invalid {query_type} page for {partition}: HTTP {status}, code {code}')
+                    report_progress(f'Invalid {query_type} page for {partition}: HTTP {status}, code {code}')
                     return False
                 if status >= 400:
-                    print(f'{query_type} HTTP {status} for {partition}; collection incomplete')
+                    report_progress(f'{query_type} HTTP {status} for {partition}; collection incomplete')
                     return False
                 store.add_page(query_type, partition, page_seq, data['items'],
                                metadata={key: value for key, value in data.items() if key != 'items'})
                 page_seq += 1
+                window_records += len(data['items'])
+                report_progress(f'Billing {query_type} {from_date}: page {page_seq} saved '
+                                f"({len(data['items'])} records; {window_records} records in window)")
                 retries = 0
                 token = next((value for key, value in headers.items()
                               if key.lower() == 'opc-next-page'), None)
                 if not token:
+                    report_progress(f'Billing {query_type} {from_date}: window complete '
+                                    f'({page_seq} pages; {window_records} records)')
                     return True
                 if not isinstance(token, str) or token in seen_pages:
-                    print(f'Repeated or invalid {query_type} page token for {partition}')
+                    report_progress(f'Repeated or invalid {query_type} page token for {partition}')
                     return False
                 seen_pages.add(token)
                 query['page'] = token
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
-            print(f'{query_type} collection failed for {partition}: {type(error).__name__}')
+            report_progress(f'{query_type} collection failed for {partition}: {type(error).__name__}')
             return False
         finally:
             request_file.unlink(missing_ok=True)

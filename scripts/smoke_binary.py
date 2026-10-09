@@ -6,6 +6,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import selectors
+import signal
+import time
 
 
 def offline_commands():
@@ -52,6 +55,38 @@ def check_missing_config(result):
         'Local authentication failure must propagate to collection status'
 
 
+def smoke_feedback(binary, environment, directory):
+    """Observe flushed output through a pipe before the controlled run finishes."""
+    arguments = ['--tenancy-ocid', 'example-tenancy', '--home-region', 'us-ashburn-1',
+                 '--from', '2026-01-01', '--to', '2026-01-02', '--no-growth-collection',
+                 '--skip-usage', '--skip-enrichment', '--skip-recommendations',
+                 '--cache-dir', str(Path(directory) / 'feedback-cache')]
+    process = subprocess.Popen([str(binary), *arguments], env=environment, cwd=directory,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        deadline, output = time.monotonic() + 120, b''
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while b'[status] Preparing collection' not in output:
+                remaining = deadline - time.monotonic()
+                assert remaining > 0, 'No flushed startup feedback before deadline'
+                if not selector.select(remaining):
+                    raise AssertionError('No flushed startup feedback before deadline')
+                chunk = os.read(process.stdout.fileno(), 8192)
+                if not chunk:
+                    raise AssertionError('Collection exited without flushed startup feedback')
+                output = (output + chunk)[-8192:]
+        assert process.poll() is None, 'Feedback appeared only after collection completed'
+        process.communicate(timeout=120)
+        assert process.returncode != 0, 'Missing-config feedback probe must fail locally'
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        process.stdout.close()
+
+
 def smoke(binary):
     binary = Path(binary).resolve()
     with tempfile.TemporaryDirectory(prefix='finops-binary-smoke-') as directory:
@@ -60,6 +95,8 @@ def smoke(binary):
         empty_path.mkdir()
         environment = {key: value for key, value in os.environ.items() if not key.startswith('OCI_')}
         environment.update({'PATH': str(empty_path), 'HOME': str(directory), 'OCI_CLI_AUTH': 'api_key', 'OCI_CLI_CONFIG_FILE': str(directory / 'missing-config')})
+        smoke_feedback(binary, environment, directory)
+        print('PASS: startup feedback is flushed while collection is still running', flush=True)
         for arguments in offline_commands():
             result = subprocess.run([str(binary), *arguments], env=environment, cwd=directory, capture_output=True, text=True, timeout=120)
             if result.returncode:

@@ -51,6 +51,17 @@ class PackagingPolicyTests(unittest.TestCase):
 
 
 class SlimRuntimeSmokeTests(unittest.TestCase):
+    def test_progress_smoke_observes_feedback_while_process_is_running(self):
+        from scripts.smoke_binary import smoke_feedback
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'helper'
+            binary.write_text('#!/bin/sh\nprintf "[status] Preparing collection\\n"\nsleep 0.2\nexit 1\n')
+            binary.chmod(0o755)
+            smoke_feedback(binary, dict(os.environ), directory)
+            binary.write_text('#!/bin/sh\nsleep 0.01\nexit 1\n')
+            with self.assertRaises(AssertionError):
+                smoke_feedback(binary, dict(os.environ), directory)
+
     def test_auth_failure_smoke_accepts_stage_diagnostics_and_rejects_import_failure(self):
         from scripts.smoke_binary import check_missing_config
         for diagnostic in ['API call failed: Abort:', 'COST page failed: Abort:\nPARTIAL COLLECTION']:

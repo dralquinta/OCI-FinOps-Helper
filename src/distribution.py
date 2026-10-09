@@ -150,6 +150,12 @@ def persist_cache(output, cache_dir):
 
 
 def run_collection(arguments, archive_dir, collector, cache_dir=None):
+    # Import lazily: utils exports OCI callers that depend on this module.
+    if __package__:
+        from .utils.feedback import report_progress, progress_heartbeat
+    else:
+        from utils.feedback import report_progress, progress_heartbeat
+    report_progress('[status] Preparing collection')
     archive_dir = Path(archive_dir).resolve()
     archive_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = Path(cache_dir or Path.home() / '.cache' / 'oci-finops-helper').absolute()
@@ -157,13 +163,14 @@ def run_collection(arguments, archive_dir, collector, cache_dir=None):
     destination = None
     with tempfile.TemporaryDirectory(prefix='oci-finops-collection-') as directory:
         try:
-            persistent = checked_cache_file(cache_dir)
-            if persistent.exists():
-                seeded_output = Path(directory) / 'output'
-                seeded_output.mkdir()
-                shutil.copyfile(persistent, seeded_output / persistent.name)
-            os.chdir(directory)
-            sys.argv = ['oci-finops-helper', *arguments]
+            with progress_heartbeat('[status] Preparing collection'):
+                persistent = checked_cache_file(cache_dir)
+                if persistent.exists():
+                    seeded_output = Path(directory) / 'output'
+                    seeded_output.mkdir()
+                    shutil.copyfile(persistent, seeded_output / persistent.name)
+                os.chdir(directory)
+                sys.argv = ['oci-finops-helper', *arguments]
             try:
                 collector()
                 status = 0
@@ -180,9 +187,13 @@ def run_collection(arguments, archive_dir, collector, cache_dir=None):
             }, indent=2))
             name = 'oci-finops-collection-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8] + '.tar.gz'
             destination = archive_dir / name
-            archive_outputs(output, destination)
-            persist_cache(output, cache_dir)
-            print('Collection archive: ' + str(destination))
+            report_progress('[status] Creating collection archive')
+            with progress_heartbeat('[status] Creating collection archive'):
+                archive_outputs(output, destination)
+            report_progress('[status] Saving metadata cache')
+            with progress_heartbeat('[status] Saving metadata cache'):
+                persist_cache(output, cache_dir)
+            report_progress('Collection archive: ' + str(destination))
             return 0
         except Exception as error:
             if destination is not None:
