@@ -9,6 +9,34 @@ from src.utils.cost_savings_analysis import analyze, export_reports, load_eviden
 
 
 class CostSavingsAnalysisTests(unittest.TestCase):
+    def test_reports_format_money_without_mutating_analysis(self):
+        import copy
+        import csv
+        raw = {'call1': {'items': [
+            {'resourceId': 'volume-1', 'region': 'r1', 'currency': 'USD',
+             'service': 'Storage', 'compartmentPath': '/team', 'computedAmount': 100.125}]}}
+        advisor = self.advisor()
+        advisor['resource_actions'][0]['estimated-cost-saving'] = 1.235
+        report = analyze(raw, self.finops(), advisor)
+        before = copy.deepcopy(report)
+        with tempfile.TemporaryDirectory() as folder:
+            paths = export_reports(report, folder)
+            self.assertIn('estimate 1.24 USD/month', paths['markdown'].read_text())
+            self.assertIn('<td>100.13</td>', paths['html'].read_text())
+            self.assertIn('<td>1.24</td>', paths['html'].read_text())
+            self.assertIn('1.24 USD/month', paths['html'].read_text())
+            self.assertIn('<td>1.24</td>', paths['runbook_html'].read_text())
+            self.assertIn('&quot;USD&quot;: &quot;100.13&quot;', paths['runbook_html'].read_text())
+            with paths['csv'].open() as stream:
+                rows = list(csv.DictReader(stream))
+            action = next(row for row in rows if row['source'] == 'Advisor')
+            self.assertEqual('1.24', action['estimated_monthly_savings_usd'])
+            self.assertEqual({'USD': '100.13'}, json.loads(action['observed_costs']))
+            for name in ['resources_csv', 'compartments_csv']:
+                with paths[name].open() as stream:
+                    self.assertEqual('100.13', next(csv.DictReader(stream))['observed_cost'])
+        self.assertEqual(before, report)
+
     def costs(self):
         return {'call1': {'items': [
             {'resourceId': 'volume-1', 'computedAmount': 100, 'currency': 'USD', 'service': 'Storage', 'region': 'r1', 'compartmentPath': '/team', 'timeUsageStarted': '2026-01-01'},

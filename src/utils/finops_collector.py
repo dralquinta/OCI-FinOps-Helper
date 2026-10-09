@@ -9,18 +9,22 @@ try:
 except ImportError:  # Direct src/collector.py execution
     from distribution import run_oci
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from .currency import format_amount
+from .parallel import bounded_map
 
 
 class OCIFinOpsCollector:
     """Collect inventory without treating missing evidence as idle resources."""
 
-    def __init__(self, tenancy_ocid, home_region, output_dir='output', execute_command=None):
+    def __init__(self, tenancy_ocid, home_region, output_dir='output', execute_command=None, max_workers_regions=4):
         self.tenancy_ocid = tenancy_ocid
         self.home_region = home_region
         self.output_dir = Path(output_dir)
         self.execute_command = execute_command or self._execute
+        self.max_workers_regions = max_workers_regions
 
     @staticmethod
     def _execute(command, description):
@@ -102,6 +106,11 @@ class OCIFinOpsCollector:
 
     @staticmethod
     def _costs(cost_data):
+        if callable(getattr(cost_data, 'lookup_costs', None)):
+            class IndexedCosts:
+                def get(self, key, default=None):
+                    return cost_data.lookup_costs(*key) or default
+            return IndexedCosts()
         totals = defaultdict(lambda: defaultdict(float))
         items = cost_data.get('items') if isinstance(cost_data, dict) else None
         for item in items if isinstance(items, list) else []:
@@ -140,22 +149,31 @@ class OCIFinOpsCollector:
         availability_domains = {}
         candidates = []
         costs = self._costs(cost_data)
-        seen = set()
+        def collect_region(region):
+            # Each worker owns its evidence and deduplication state. Only the
+            # integration thread merges results, in sorted region order.
+            worker = OCIFinOpsCollector(self.tenancy_ocid, self.home_region,
+                                       self.output_dir, self.execute_command)
+            worker.coverage = []
+            inventory = {name: [] for name in ('resources', 'instances', 'volumes',
+                         'volume_attachments', 'boot_volumes', 'boot_volume_attachments')}
+            availability_domains = {}
+            candidates = []
+            seen = set()
 
-        def store(kind, records, region, compartment=None, ad=None):
-            for record in records or []:
-                resource_id = record.get('id', record.get('identifier'))
-                key = (kind, region, resource_id) if resource_id else (kind, region, compartment, ad, json.dumps(record, sort_keys=True))
-                if key in seen:
-                    continue
-                seen.add(key)
-                inventory[kind].append({'region': region, 'compartment_id': compartment or record.get('compartment-id'),
-                                        'availability_domain': ad, 'record': record})
+            def store(kind, records, region, compartment=None, ad=None):
+                for record in records or []:
+                    resource_id = record.get('id', record.get('identifier'))
+                    key = (kind, region, resource_id) if resource_id else (kind, region, compartment, ad, json.dumps(record, sort_keys=True))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    inventory[kind].append({'region': region, 'compartment_id': compartment or record.get('compartment-id'),
+                                            'availability_domain': ad, 'record': record})
 
-        for region in regions:
-            resources = self._fetch('search resource structured-search', ['--query-text', 'query all resources'], region)
+            resources = worker._fetch('search resource structured-search', ['--query-text', 'query all resources'], region)
             store('resources', resources, region)
-            ads = self._fetch('iam availability-domain list', ['--compartment-id', self.tenancy_ocid], region, self.tenancy_ocid)
+            ads = worker._fetch('iam availability-domain list', ['--compartment-id', self.tenancy_ocid], region, self.tenancy_ocid)
             availability_domains[region] = ads
             block_complete = discovery_complete
             boot_complete = discovery_complete and ads is not None and bool(ads)
@@ -164,7 +182,7 @@ class OCIFinOpsCollector:
                 for kind, operation in (
                         ('instances', 'compute instance list'), ('volumes', 'bv volume list'),
                         ('volume_attachments', 'compute volume-attachment list')):
-                    records = self._fetch(operation, arguments, region, compartment)
+                    records = worker._fetch(operation, arguments, region, compartment)
                     store(kind, records, region, compartment)
                     if kind == 'volume_attachments' and records is None:
                         block_complete = False
@@ -177,7 +195,7 @@ class OCIFinOpsCollector:
                         continue
                     for kind, operation in (('boot_volumes', 'bv boot-volume list'),
                                             ('boot_volume_attachments', 'compute boot-volume-attachment list')):
-                        records = self._fetch(operation, [*arguments, '--availability-domain', name], region, compartment, name)
+                        records = worker._fetch(operation, [*arguments, '--availability-domain', name], region, compartment, name)
                         store(kind, records, region, compartment, name)
                         if kind == 'boot_volume_attachments' and records is None:
                             boot_complete = False
@@ -216,6 +234,15 @@ class OCIFinOpsCollector:
                         'costs': [{'currency': currency, 'computed_amount': amount} for currency, amount in sorted(resource_costs.items())],
                         'evidence': 'inventory and complete regional attachment scans' if kind != 'instances' else 'stopped state; billing depends on shape and associated resources',
                     })
+            return inventory, availability_domains, candidates, worker.coverage
+
+        with ThreadPoolExecutor(max_workers=self.max_workers_regions) as executor:
+            for regional_inventory, regional_ads, regional_candidates, regional_coverage in bounded_map(executor, collect_region, regions, self.max_workers_regions):
+                for kind, records in regional_inventory.items():
+                    inventory[kind].extend(records)
+                availability_domains.update(regional_ads)
+                candidates.extend(regional_candidates)
+                self.coverage.extend(regional_coverage)
         results = {
             'collection_timestamp': datetime.now(timezone.utc).isoformat(),
             'tenancy_ocid': self.tenancy_ocid, 'regions': regions, 'compartments': compartments,
@@ -223,7 +250,9 @@ class OCIFinOpsCollector:
             'discovery': {'region_subscriptions': subscriptions, 'compartments': discovered,
                           'availability_domains': availability_domains},
             'candidates': candidates, 'cost_window': {'from_date': from_date, 'to_date': to_date},
-            'cost_data': cost_data if isinstance(cost_data, dict) else None,
+            'cost_data': cost_data if isinstance(cost_data, dict) else (
+                {'source': 'out.json', 'dataset': 'call1', 'record_count': cost_data.count}
+                if callable(getattr(cost_data, 'lookup_costs', None)) else None),
             'scope': 'Read-only review candidates; actual costs are not estimated savings. Search includes indexed, authorized resources only.',
         }
         self._save(results)
@@ -231,13 +260,16 @@ class OCIFinOpsCollector:
 
     def _save(self, results):
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / 'finops_collection.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
+        with (self.output_dir / 'finops_collection.json').open('w', encoding='utf-8') as stream:
+            json.dump(results, stream, indent=2)
         fields = ['resource_id', 'resource_type', 'region', 'compartment_id', 'display_name', 'reason', 'lifecycle_state', 'cost_status', 'costs', 'evidence']
         with (self.output_dir / 'finops_candidates.csv').open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
             for candidate in results['candidates']:
-                writer.writerow({**candidate, 'costs': json.dumps(candidate['costs'])})
+                costs = [{**item, 'computed_amount': format_amount(item['computed_amount'])}
+                         for item in candidate['costs']]
+                writer.writerow({**candidate, 'costs': json.dumps(costs)})
         failed = sum(item['status'] == 'failed' for item in results['coverage'])
         summary = (f"FinOps collection: {len(results['regions'])} regions; {len(results['compartments'])} compartments\n"
                    f"Review candidates: {len(results['candidates'])}\nFailed collection requests: {failed}\n"

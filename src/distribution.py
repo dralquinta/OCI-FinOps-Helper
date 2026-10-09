@@ -1,5 +1,6 @@
 """Standalone binary dispatch and safe collection archive delivery."""
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -9,6 +10,46 @@ import sys
 import tarfile
 import tempfile
 import uuid
+import importlib.util
+import threading
+import shutil
+try:
+    from .oci_worker import OCIWorkerPool
+except ImportError:  # Direct src/collector.py execution
+    from oci_worker import OCIWorkerPool
+
+
+_worker_pool = None
+_worker_pool_users = 0
+_worker_pool_lock = threading.RLock()
+_persistent_worker = False
+_processed_oci_callbacks = set()
+
+
+def worker_available():
+    return getattr(sys, 'frozen', False) or importlib.util.find_spec('oci_cli') is not None
+
+
+@contextmanager
+def oci_worker_pool(max_workers=4):
+    """Reuse CLI interpreters only within an explicitly scoped collection."""
+    global _worker_pool, _worker_pool_users
+    if not worker_available():
+        yield None
+        return
+    with _worker_pool_lock:
+        if _worker_pool is None:
+            _worker_pool = OCIWorkerPool(max_workers=max_workers)
+        _worker_pool_users += 1
+        active = _worker_pool
+    try:
+        yield active
+    finally:
+        with _worker_pool_lock:
+            _worker_pool_users -= 1
+            if _worker_pool_users == 0:
+                _worker_pool = None
+                active.close()
 
 
 def oci_command(command):
@@ -19,6 +60,11 @@ def oci_command(command):
 
 
 def run_oci(command, **kwargs):
+    supported = {'capture_output', 'text', 'timeout', 'check', 'encoding', 'errors', 'universal_newlines'}
+    with _worker_pool_lock:
+        pool = _worker_pool
+    if pool is not None and command and command[0] == 'oci' and kwargs.get('capture_output') and not set(kwargs) - supported:
+        return pool.run(command, **kwargs)
     return subprocess.run(oci_command(command), **kwargs)
 
 
@@ -39,7 +85,14 @@ def invoke_oci(arguments):
         dynamic_loader.load_service_from_command(sys.argv)
         if getattr(sys, 'frozen', False):
             from oci_cli import final_command_processor
-            final_command_processor.process()
+            if _persistent_worker:
+                final_command_processor.add_shortcuts()
+                for callback in final_command_processor.SERVICE_FUNCTIONS_TO_EXECUTE:
+                    if callback not in _processed_oci_callbacks:
+                        callback()
+                        _processed_oci_callbacks.add(callback)
+            else:
+                final_command_processor.process()
         from oci_cli.cli import cli
         try:
             cli.main(args=arguments, prog_name='oci', standalone_mode=True)
@@ -88,7 +141,8 @@ def persist_cache(output, cache_dir):
     try:
         with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.cache-', delete=False) as stream:
             temporary = Path(stream.name)
-            stream.write(source.read_bytes())
+            with source.open('rb') as original:
+                shutil.copyfileobj(original, stream, length=1024 * 1024)
         temporary.replace(target)
     finally:
         if temporary is not None:
@@ -96,6 +150,12 @@ def persist_cache(output, cache_dir):
 
 
 def run_collection(arguments, archive_dir, collector, cache_dir=None):
+    # Import lazily: utils exports OCI callers that depend on this module.
+    if __package__:
+        from .utils.feedback import report_progress, progress_heartbeat
+    else:
+        from utils.feedback import report_progress, progress_heartbeat
+    report_progress('[status] Preparing collection')
     archive_dir = Path(archive_dir).resolve()
     archive_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = Path(cache_dir or Path.home() / '.cache' / 'oci-finops-helper').absolute()
@@ -103,13 +163,14 @@ def run_collection(arguments, archive_dir, collector, cache_dir=None):
     destination = None
     with tempfile.TemporaryDirectory(prefix='oci-finops-collection-') as directory:
         try:
-            persistent = checked_cache_file(cache_dir)
-            if persistent.exists():
-                seeded_output = Path(directory) / 'output'
-                seeded_output.mkdir()
-                (seeded_output / persistent.name).write_bytes(persistent.read_bytes())
-            os.chdir(directory)
-            sys.argv = ['oci-finops-helper', *arguments]
+            with progress_heartbeat('[status] Preparing collection'):
+                persistent = checked_cache_file(cache_dir)
+                if persistent.exists():
+                    seeded_output = Path(directory) / 'output'
+                    seeded_output.mkdir()
+                    shutil.copyfile(persistent, seeded_output / persistent.name)
+                os.chdir(directory)
+                sys.argv = ['oci-finops-helper', *arguments]
             try:
                 collector()
                 status = 0
@@ -126,9 +187,13 @@ def run_collection(arguments, archive_dir, collector, cache_dir=None):
             }, indent=2))
             name = 'oci-finops-collection-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8] + '.tar.gz'
             destination = archive_dir / name
-            archive_outputs(output, destination)
-            persist_cache(output, cache_dir)
-            print('Collection archive: ' + str(destination))
+            report_progress('[status] Creating collection archive')
+            with progress_heartbeat('[status] Creating collection archive'):
+                archive_outputs(output, destination)
+            report_progress('[status] Saving metadata cache')
+            with progress_heartbeat('[status] Saving metadata cache'):
+                persist_cache(output, cache_dir)
+            report_progress('Collection archive: ' + str(destination))
             return 0
         except Exception as error:
             if destination is not None:
@@ -165,6 +230,9 @@ def main(arguments=None):
     arguments = list(sys.argv[1:] if arguments is None else arguments)
     if arguments[:1] == ['--internal-oci']:
         return invoke_oci(arguments[1:])
+    if arguments[:1] == ['--internal-oci-worker']:
+        from .oci_worker import serve
+        return serve()
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--archive-dir', default=str(Path.cwd()))
     parser.add_argument('--extract-suite')

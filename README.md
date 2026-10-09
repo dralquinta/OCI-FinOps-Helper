@@ -65,8 +65,25 @@ No installation required! The script automatically:
 ### Basic Command
 
 ```bash
+./collector.sh --tenancy-ocid <tenancy_ocid> --home-region <home_region> \
+  --from <YYYY-MM-DD> --to <YYYY-MM-DD>
+
+# Existing positional invocations remain supported.
 ./collector.sh <tenancy_ocid> <home_region> <from_date> <to_date>
 ```
+
+Use either all four named options or all four positional arguments. Dates must be valid `YYYY-MM-DD` values with the start earlier than the exclusive end date. `--from-date` and `--to-date` are aliases for `--from` and `--to`.
+
+Growth collection is enabled by default and includes tags, regional FinOps inventory, attachments, Monitoring, Audit and event rules. Add `--no-growth-collection` for cost/usage and recommendations without those stages. `--only-recommendations` runs only Advisor collection; `--only-growth` runs only growth/FinOps collection. `--skip-enrichment` skips instance metadata calls.
+
+The standalone executable accepts the same options:
+
+```bash
+./dist/oci-finops-helper --tenancy-ocid <tenancy_ocid> --home-region us-ashburn-1 \
+  --from 2025-09-01 --to 2025-09-18 --archive-dir ./collections
+```
+
+The executable includes its OCI CLI and emits an isolated collection archive. Use `--help` to inspect options without authentication. See [binary distribution](docs/binary-distribution.md) for build and extraction instructions.
 
 ### Parameters
 
@@ -81,7 +98,7 @@ No installation required! The script automatically:
 
 ```bash
 ./collector.sh \
-  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  <tenancy_ocid> \
   us-ashburn-1 \
   2025-11-01 \
   2025-11-04
@@ -106,7 +123,7 @@ chmod +x collector.sh
 
 The collector follows a multi-step process to gather comprehensive cost data:
 
-The independent COST and USAGE requests run concurrently with at most two workers; each request still collects all pages before its results are used.
+The CLI collects daily COST and USAGE windows with four bounded workers, persisting each API page to temporary SQLite before requesting the next. Billing merges and CSV enrichment process at most 2,000 rows per chunk; raw JSON is written incrementally.
 
 ### Step 1: COST API Call
 Queries OCI Usage API with `queryType: COST` to retrieve:
@@ -151,6 +168,8 @@ Generates multiple output files with enriched data and recommendations.
 The script generates the following files in the working directory:
 
 ### 1. output_merged.csv
+Monetary columns use two decimal places; quantity and utilization precision is preserved. Amounts retain their source billing currency, with missing currency marked `Unknown`. Advisor estimates are reported in USD; no foreign exchange conversion is performed. Raw JSON and in-memory analysis retain their original numeric precision.
+
 **Complete enriched dataset** with all fields including:
 - Cost metrics: `computedAmount`, `computedQuantity`, `attributedCost`
 - Service info: `service`, `skuName`, `skuPartNumber`
@@ -196,7 +215,7 @@ Skip cost/usage collection and fetch only recommendations (completes in seconds)
 
 # Example
 ./collector.sh \
-  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  <tenancy_ocid> \
   us-ashburn-1 \
   2025-11-01 \
   2025-11-20 \
@@ -261,7 +280,7 @@ The growth collection feature analyzes six key aspects of your OCI tagging:
 **Example:**
 ```bash
 ./collector.sh \
-  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  <tenancy_ocid> \
   us-ashburn-1 \
   2025-11-01 \
   2025-12-01 \
@@ -375,6 +394,8 @@ For detailed guidance on recommendations, see:
 - `docs/V2.1_NEW_FEATURES.md` - Latest v2.1 features
 
 ## Performance Notes
+
+Metadata, tag/default, Monitoring and Audit pools default to four workers to limit heavyweight OCI process fan-out. Metadata queues hold at most one pending lookup per worker. Monitoring lists metrics once per region/compartment and filters supported namespaces locally. Audit uses daily `[from, to)` windows and server-sized pages, counts all retrieved events, and retains at most 1,000 sample events. Failed requests remain visible in coverage records. Runtime depends on tenancy size, permissions and API response times.
 
 ### Data Volume
 - **Small queries** (1-7 days): ~1-2 minutes
@@ -504,7 +525,7 @@ For optimal performance with large queries:
 
 ```bash
 ./collector.sh \
-  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  <tenancy_ocid> \
   us-ashburn-1 \
   $(date -d '7 days ago' +%Y-%m-%d) \
   $(date +%Y-%m-%d)
@@ -514,7 +535,7 @@ For optimal performance with large queries:
 
 ```bash
 ./collector.sh \
-  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  <tenancy_ocid> \
   us-ashburn-1 \
   $(date +%Y-%m-01) \
   $(date +%Y-%m-%d)
@@ -524,7 +545,7 @@ For optimal performance with large queries:
 
 ```bash
 ./collector.sh \
-  ocid1.tenancy.oc1..aaaaaaaaoi6b5sxlv4z773boczybqz3h2vspvvru42jysvizl77lky22ijaq \
+  <tenancy_ocid> \
   us-ashburn-1 \
   2025-10-01 \
   2025-10-31
@@ -562,3 +583,5 @@ For issues, questions, or contributions, please use the repository's issue track
 ---
 
 **Need help?** Check the [QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) for common patterns or [ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details.
+
+Large billing datasets use disk-backed indexed joins and metadata caches, with bounded request queues and four reusable OCI workers. Reserve scratch space for SQLite, raw JSON and CSV artifacts; disk usage grows with row count. Set TMPDIR to a filesystem with sufficient space for the temporary database. Transient HTTP 429/500/502/503/504 pages have four bounded retries; exhausted retries produce a partial-collection failure. The legacy programmatic bulk interface remains available. Inventory safety still requires resource and attachment indexes, so growth-stage memory and runtime also depend on discovered resources and scopes.

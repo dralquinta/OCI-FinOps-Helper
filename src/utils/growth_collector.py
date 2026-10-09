@@ -14,13 +14,14 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .progress import ProgressSpinner, ProgressTracker
+from .parallel import bounded_map
 from .finops_collector import OCIFinOpsCollector
 
 
 class OCIGrowthCollector:
     """Collects tag-related data for growth analysis from OCI."""
     
-    def __init__(self, tenancy_ocid, home_region, output_dir='output', max_workers_tags=20, max_workers_compartments=30):
+    def __init__(self, tenancy_ocid, home_region, output_dir='output', max_workers_tags=4, max_workers_compartments=4):
         """
         Initialize Growth Collector.
         
@@ -28,8 +29,8 @@ class OCIGrowthCollector:
             tenancy_ocid: OCI Tenancy OCID
             home_region: Home region (e.g., us-ashburn-1)
             output_dir: Output directory for collected data
-            max_workers_tags: Max parallel workers for tag definitions (default: 10)
-            max_workers_compartments: Max parallel workers for compartment scanning (default: 20)
+            max_workers_tags: Max parallel workers for tag definitions (default: 4)
+            max_workers_compartments: Max parallel workers for compartment scanning (default: 4)
         """
         self.tenancy_ocid = tenancy_ocid
         self.home_region = home_region
@@ -74,6 +75,12 @@ class OCIGrowthCollector:
                 print(f"❌ Command failed: {result.stderr[:200]}")
                 return None
             
+            # OCI CLI renders successful empty list responses as no output.
+            # Restrict this normalization to list actions; failed commands and
+            # missing payloads from get/raw-request must remain failed evidence.
+            if command[:1] == ['oci'] and command[3:4] == ['list'] and not result.stdout.strip():
+                return []
+
             # Parse JSON response
             response = json.loads(result.stdout)
 
@@ -761,20 +768,6 @@ class OCIGrowthCollector:
                      'region': self.home_region}]
         definitions = []
 
-        def fetch(command, context):
-            try:
-                data = self._execute_oci_command(command, 'Collecting Monitoring evidence')
-                if isinstance(data, dict):
-                    data = data.get('items')
-                valid = isinstance(data, list) and all(isinstance(row, dict) for row in data)
-                coverage.append({**context, 'status': ('success' if data else 'empty')
-                                 if valid else 'failed'})
-                return data if valid else None
-            except Exception as error:
-                coverage.append({**context, 'status': 'failed',
-                                 'error_type': type(error).__name__})
-                return None
-
         # SummarizeMetricsData has no --all. Hourly resolution supports at most
         # 90 days per request; retain separate windows and their coverage.
         windows = []
@@ -784,170 +777,197 @@ class OCIGrowthCollector:
             windows.append((cursor.strftime('%Y-%m-%dT%H:%M:%SZ'),
                             window_end.strftime('%Y-%m-%dT%H:%M:%SZ')))
             cursor = window_end
-        for region in regions:
-            for compartment in self.compartments:
-                for namespace in namespaces:
-                    context = {'region': region, 'compartment_id': compartment,
-                               'namespace': namespace}
-                    scope = ['--compartment-id', compartment, '--namespace', namespace,
-                             '--region', region, '--output', 'json']
-                    available = fetch(['oci', 'monitoring', 'metric', 'list',
-                                       *scope, '--all'],
-                                      {**context, 'operation': 'metric_discovery'})
-                    for definition in available or []:
-                        definitions.append({**context, 'record': definition})
-                    names = sorted({row['name'] for row in available or []
-                                    if isinstance(row.get('name'), str) and row['name']})
-                    for name in names:
-                        metric = metrics[namespace]['metrics'].setdefault(name,
-                                  {'data_points': 0, 'samples': []})
-                        for window_start, window_end in windows:
-                            streams = fetch([
-                                'oci', 'monitoring', 'metric-data', 'summarize-metrics-data',
-                                *scope, '--query-text', f'{name}[1h].mean()',
-                                '--start-time', window_start, '--end-time', window_end,
-                                '--resolution', '1h'
-                            ], {**context, 'operation': 'metric_query', 'metric': name,
-                                'start_time': window_start, 'end_time': window_end})
-                            for stream in streams or []:
-                                metric['samples'].append({**stream, **context,
-                                                          'window_start': window_start,
-                                                          'window_end': window_end})
-                                points = stream.get('aggregated-datapoints',
-                                                    stream.get('aggregatedDatapoints', []))
-                                metric['data_points'] += len(points) if isinstance(points, list) else 0
+        sample_limit = 1000
+
+        def new_metric():
+            return {'data_points': 0, 'stream_count': 0,
+                    'retained_data_points': 0, 'samples': []}
+
+        def retain_sample(metric, stream, context=None):
+            # Cap both nonempty datapoints and empty streams. Copy only retained
+            # point slices so queued worker results cannot hold complete queries.
+            if len(metric['samples']) >= sample_limit:
+                return
+            point_field = ('aggregated-datapoints' if 'aggregated-datapoints' in stream
+                           else 'aggregatedDatapoints')
+            points = stream.get(point_field, [])
+            remaining = sample_limit - metric['retained_data_points']
+            if isinstance(points, list) and points and remaining <= 0:
+                return
+            sample = {**stream, **(context or {})}
+            if isinstance(points, list) and point_field in stream:
+                sample[point_field] = points[:remaining]
+                metric['retained_data_points'] += len(sample[point_field])
+            metric['samples'].append(sample)
+
+        def collect_scope(scope_context):
+            region, compartment = scope_context
+            context = {'region': region, 'compartment_id': compartment}
+            local_coverage, local_definitions, local_streams = [], [], {}
+
+            def fetch(command, query_context):
+                try:
+                    data = self._execute_oci_command(command, 'Collecting Monitoring evidence')
+                    if isinstance(data, dict):
+                        data = data.get('items')
+                    valid = isinstance(data, list) and all(isinstance(row, dict) for row in data)
+                    local_coverage.append({**query_context, 'status': ('success' if data else 'empty')
+                                           if valid else 'failed'})
+                    return data if valid else None
+                except Exception as error:
+                    local_coverage.append({**query_context, 'status': 'failed',
+                                           'error_type': type(error).__name__})
+                    return None
+
+            scope = ['--compartment-id', compartment, '--region', region, '--output', 'json']
+            available = fetch(['oci', 'monitoring', 'metric', 'list', *scope, '--all'],
+                              {**context, 'operation': 'metric_discovery'})
+            names = set()
+            for definition in available or []:
+                namespace, name = definition.get('namespace'), definition.get('name')
+                if namespace in namespaces and isinstance(name, str) and name:
+                    local_definitions.append({**context, 'namespace': namespace, 'record': definition})
+                    names.add((namespace, name))
+            for namespace, name in sorted(names):
+                for window_start, window_end in windows:
+                    query_context = {**context, 'namespace': namespace, 'operation': 'metric_query',
+                                     'metric': name, 'start_time': window_start, 'end_time': window_end}
+                    streams = fetch([
+                        'oci', 'monitoring', 'metric-data', 'summarize-metrics-data',
+                        *scope, '--namespace', namespace, '--query-text', f'{name}[1h].mean()',
+                        '--start-time', window_start, '--end-time', window_end, '--resolution', '1h'
+                    ], query_context)
+                    local_metric = local_streams.setdefault((namespace, name), new_metric())
+                    for stream in streams or []:
+                        points = stream.get('aggregated-datapoints', stream.get('aggregatedDatapoints', []))
+                        local_metric['data_points'] += len(points) if isinstance(points, list) else 0
+                        local_metric['stream_count'] += 1
+                        retain_sample(local_metric, stream, {**context, 'namespace': namespace,
+                                      'window_start': window_start, 'window_end': window_end})
+            return local_coverage, local_definitions, local_streams
+
+        scopes = ((region, compartment) for region in regions for compartment in self.compartments)
+        with ThreadPoolExecutor(max_workers=self.max_workers_compartments) as executor:
+            for scope_coverage, scope_definitions, scope_streams in bounded_map(executor, collect_scope, scopes, self.max_workers_compartments):
+                coverage.extend(scope_coverage)
+                definitions.extend(scope_definitions)
+                for (namespace, name), local_metric in scope_streams.items():
+                    metric = metrics[namespace]['metrics'].setdefault(name, new_metric())
+                    metric['data_points'] += local_metric['data_points']
+                    metric['stream_count'] += local_metric['stream_count']
+                    for stream in local_metric['samples']:
+                        retain_sample(metric, stream)
+        for namespace in metrics.values():
+            for metric in namespace['metrics'].values():
+                metric['samples_truncated'] = (metric['retained_data_points'] < metric['data_points']
+                                               or len(metric['samples']) < metric['stream_count'])
         return {
             'collection_period': {'from_date': from_date, 'to_date': to_date,
                                   'end_exclusive': True},
             'resolution': '1h', 'regions': regions,
             'retention_note': 'Hourly metrics are retained for 90 days from request time; '
                               'missing or historical data is unknown, not zero activity.',
+            'sampling_note': 'Samples retain at most 1000 datapoints and 1000 streams per namespace/metric. '
+                             'data_points and stream_count include all returned query results; '
+                             'samples_truncated marks omitted evidence. Samples alone cannot prove inactivity.',
             'metric_definitions': definitions, 'metrics_by_namespace': metrics,
             'coverage': coverage
         }
 
     def collect_audit_events(self, from_date, to_date):
+        """Collect Audit evidence in valid daily windows with bounded samples.
+
+        Daily windows and explicit pagination keep each response bounded. The
+        end date is exclusive, matching Usage and Monitoring collection.
+        Failed windows remain visible.
         """
-        Collect audit events from OCI Audit service.
-        Data Point: Audit Events
-        API: oci.audit.AuditClient.list_events(compartment_id, start_time, end_time)
-        Purpose: Track resource lifecycle patterns, identify who did what and when
-        
-        Args:
-            from_date: Start date (YYYY-MM-DD)
-            to_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            Dictionary with audit events summary and patterns
-        """
-        print(f"\n{'='*70}")
-        print("🔍 Collecting Audit Events")
-        print(f"{'='*70}")
-        
+        start = datetime.strptime(from_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        end = datetime.strptime(to_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        if end <= start:
+            raise ValueError('Audit end date must be after start date')
         if not self.compartments:
             self._get_all_compartments()
-        
-        all_events = []
-        event_stats = {
-            'total_events': 0,
-            'event_types': {},
-            'resource_types': {},
-            'users': set(),
-            'compartments_with_events': set()
-        }
-        
-        print(f"Scanning {len(self.compartments)} compartments for audit events...")
-        print(f"Using {self.max_workers_compartments} parallel workers...")
-        
+        windows = []
+        cursor = start
+        while cursor < end:
+            window_end = min(cursor + timedelta(days=1), end)
+            windows.append((cursor.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            window_end.strftime('%Y-%m-%dT%H:%M:%SZ')))
+            cursor = window_end
+
+        def collect_compartment(compartment):
+            counts = {'total_events': 0, 'event_types': {}, 'resource_types': {}, 'users': set()}
+            samples, coverage = [], []
+            for window_start, window_end in windows:
+                context = {'compartment_id': compartment, 'start_time': window_start, 'end_time': window_end}
+                command = ['oci', 'audit', 'event', 'list', '--compartment-id', compartment,
+                           '--start-time', window_start, '--end-time', window_end,
+                           '--region', self.home_region, '--output', 'json']
+                seen_pages = set()
+                window_events = 0
+                try:
+                    while True:
+                        response = run_oci(command, capture_output=True, text=True, timeout=60)
+                        if response.returncode != 0:
+                            raise ValueError('Audit page request failed')
+                        payload = json.loads(response.stdout)
+                        events = payload.get('data')
+                        if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+                            raise ValueError('Unexpected Audit page format')
+                        samples.extend(events[:max(0, 1000 - len(samples))])
+                        for event in events:
+                            counts['total_events'] += 1
+                            window_events += 1
+                            data = event.get('data') or {}
+                            for key, field in [('event_types', 'eventName'), ('resource_types', 'resourceName')]:
+                                value = data.get(field) or 'Unknown'
+                                counts[key][value] = counts[key].get(value, 0) + 1
+                            principal = (data.get('identity') or {}).get('principalName')
+                            if principal:
+                                counts['users'].add(principal)
+                        next_page = payload.get('opc-next-page')
+                        if not next_page:
+                            coverage.append({**context, 'status': 'success' if window_events else 'empty'})
+                            break
+                        if next_page in seen_pages:
+                            raise ValueError('Audit repeated its page token')
+                        seen_pages.add(next_page)
+                        if '--page' in command:
+                            command[command.index('--page') + 1] = next_page
+                        else:
+                            command = [*command, '--page', next_page]
+                except Exception as error:
+                    coverage.append({**context, 'status': 'failed', 'error_type': type(error).__name__,
+                                     'events_collected': window_events})
+            return counts, samples, coverage
+
+        total = 0
+        event_types, resource_types, users = {}, {}, set()
+        samples, coverage = [], []
+        compartments_with_events = 0
         tracker = ProgressTracker(len(self.compartments))
-        completed = 0
-        
-        # Helper function for parallel processing
-        def fetch_audit_events(comp_id):
-            command = [
-                'oci', 'audit', 'event', 'list',
-                '--compartment-id', comp_id,
-                '--start-time', f"{from_date}T00:00:00.000Z",
-                '--end-time', f"{to_date}T23:59:59.999Z",
-                '--all',
-                '--output', 'json'
-            ]
-            
-            try:
-                result = run_oci(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-                
-                if result.returncode == 0:
-                    response = json.loads(result.stdout)
-                    return comp_id, response.get('data', [])
-                else:
-                    return comp_id, []
-            except Exception:
-                return comp_id, []
-        
-        # Execute in parallel
         with ThreadPoolExecutor(max_workers=self.max_workers_compartments) as executor:
-            future_to_compartment = {
-                executor.submit(fetch_audit_events, comp_id): comp_id
-                for comp_id in self.compartments
-            }
-            
-            for future in as_completed(future_to_compartment):
-                comp_id, events = future.result()
-                completed += 1
-                
-                if events:
-                    all_events.extend(events)
-                    event_stats['compartments_with_events'].add(comp_id)
-                    
-                    # Analyze events
-                    for event in events:
-                        event_stats['total_events'] += 1
-                        
-                        event_type = event.get('data', {}).get('eventName', 'Unknown')
-                        event_stats['event_types'][event_type] = event_stats['event_types'].get(event_type, 0) + 1
-                        
-                        resource_type = event.get('data', {}).get('resourceName', 'Unknown')
-                        event_stats['resource_types'][resource_type] = event_stats['resource_types'].get(resource_type, 0) + 1
-                        
-                        principal = event.get('data', {}).get('identity', {}).get('principalName', '')
-                        if principal:
-                            event_stats['users'].add(principal)
-                
+            for completed, (counts, retained, windows_coverage) in enumerate(
+                    bounded_map(executor, collect_compartment, self.compartments, self.max_workers_compartments), 1):
+                total += counts['total_events']
+                compartments_with_events += bool(counts['total_events'])
+                users.update(counts['users'])
+                for target, source in [(event_types, counts['event_types']), (resource_types, counts['resource_types'])]:
+                    for name, count in source.items():
+                        target[name] = target.get(name, 0) + count
+                samples.extend(retained[:max(0, 1000 - len(samples))])
+                coverage.extend(windows_coverage)
                 tracker.update(completed)
-        
         tracker.finish()
-        
-        # Convert sets to lists for JSON serialization
-        result = {
-            'collection_period': {
-                'from_date': from_date,
-                'to_date': to_date
-            },
-            'total_events': event_stats['total_events'],
-            'compartments_with_events': len(event_stats['compartments_with_events']),
-            'unique_users': len(event_stats['users']),
-            'event_types': dict(sorted(event_stats['event_types'].items(), key=lambda x: x[1], reverse=True)),
-            'resource_types': dict(sorted(event_stats['resource_types'].items(), key=lambda x: x[1], reverse=True)),
-            'sample_events': all_events[:1000]  # Store first 1000 events
+        return {
+            'collection_period': {'from_date': from_date, 'to_date': to_date, 'end_exclusive': True},
+            'total_events': total, 'compartments_with_events': compartments_with_events,
+            'unique_users': len(users),
+            'event_types': dict(sorted(event_types.items(), key=lambda item: item[1], reverse=True)),
+            'resource_types': dict(sorted(resource_types.items(), key=lambda item: item[1], reverse=True)),
+            'sample_events': samples, 'coverage': coverage
         }
-        
-        print(f"✅ Collected {result['total_events']} audit events")
-        print(f"  📊 Unique event types: {len(result['event_types'])}")
-        print(f"  📊 Unique resource types: {len(result['resource_types'])}")
-        print(f"  📊 Unique users: {result['unique_users']}")
-        
-        # Show top 5 event types
-        print("\n📋 Top 5 event types:")
-        for event_type, count in list(result['event_types'].items())[:5]:
-            print(f"  🔹 {event_type}: {count}")
-        
-        return result
-    
+
     def collect_event_rules(self):
         """
         Collect event rules from OCI Events service.

@@ -13,6 +13,7 @@ except ImportError:  # Direct src/collector.py execution
 from pathlib import Path
 from datetime import datetime
 from .progress import ProgressSpinner
+from .currency import format_amount
 
 
 class OCIRecommendationsFetcher:
@@ -332,7 +333,7 @@ class OCIRecommendationsFetcher:
             report_lines.append(f"Action:          {action.get('action', 'UNKNOWN')}")
             report_lines.append(f"Status:          {action.get('status', 'UNKNOWN')}")
             saving = action.get('estimated-cost-saving')
-            report_lines.append(f"Savings:         {saving if saving is not None else 'UNKNOWN'} USD/month")
+            report_lines.append(f"Savings:         {format_amount(saving) or 'UNKNOWN'} USD/month")
             report_lines.append(f"Metadata:        {json.dumps(action.get('metadata', {}), sort_keys=True)}")
             report_lines.append("")
         coverage = recommendations_data.get('coverage', {}).get('resource_actions', {})

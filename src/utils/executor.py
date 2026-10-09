@@ -9,14 +9,14 @@ try:
     from ..distribution import run_oci
 except ImportError:  # Direct src/collector.py execution
     from distribution import run_oci
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from .progress import ProgressTracker
 
 
 class OCIMetadataFetcher:
     """Fetch OCI instance metadata in parallel using ThreadPoolExecutor."""
     
-    def __init__(self, max_workers=10):
+    def __init__(self, max_workers=4):
         """Initialize fetcher with thread pool size."""
         self.max_workers = max_workers
     
@@ -79,30 +79,29 @@ class OCIMetadataFetcher:
         
         # Use ThreadPoolExecutor for parallel processing
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all tasks
-            future_to_instance = {
-                executor.submit(self._fetch_single_instance, iid): iid 
-                for iid in instance_ids
-            }
-            
-            # Process completed tasks as they finish
-            for future in as_completed(future_to_instance):
-                instance_id, metadata = future.result()
-                completed += 1
-                
-                if metadata is not None:
-                    instance_metadata[instance_id] = metadata
-                    successful += 1
-                else:
-                    failed += 1
-                
-                # Update progress display
-                progress.update(completed)
-                
-                # Optional callback
-                if progress_callback:
-                    progress_callback(completed)
-        
+            remaining = iter(instance_ids)
+            pending = set()
+            for iid in remaining:
+                pending.add(executor.submit(self._fetch_single_instance, iid))
+                if len(pending) >= self.max_workers:
+                    break
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    instance_id, metadata = future.result()
+                    completed += 1
+                    if metadata is not None:
+                        instance_metadata[instance_id] = metadata
+                        successful += 1
+                    else:
+                        failed += 1
+                    progress.update(completed)
+                    if progress_callback:
+                        progress_callback(completed)
+                    iid = next(remaining, None)
+                    if iid is not None:
+                        pending.add(executor.submit(self._fetch_single_instance, iid))
+
         # Finish progress display
         progress.finish()
         

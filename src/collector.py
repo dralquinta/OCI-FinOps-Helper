@@ -10,6 +10,7 @@ import sys
 import subprocess
 import time
 import argparse
+from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pandas as pd
@@ -21,18 +22,21 @@ if __package__:
     from .utils.api_executor import OCIAPIExecutor
     from .utils.recommendations import OCIRecommendationsFetcher
     from .utils.growth_collector import OCIGrowthCollector
+    from .utils.currency import write_cost_csv
 else:
     from utils.progress import ProgressSpinner, ProgressTracker
     from utils.executor import OCIMetadataFetcher
     from utils.api_executor import OCIAPIExecutor
     from utils.recommendations import OCIRecommendationsFetcher
     from utils.growth_collector import OCIGrowthCollector
+    from utils.currency import write_cost_csv
 
 
 class OCICostCollector:
     """Collects cost and usage data from OCI and enriches with instance metadata."""
     
-    def __init__(self, tenancy_ocid, home_region, from_date, to_date, output_dir='output'):
+    def __init__(self, tenancy_ocid, home_region, from_date, to_date, output_dir='output', streaming=False):
+        self.streaming = streaming
         self.tenancy_ocid = tenancy_ocid
         self.home_region = home_region
         self.from_date = from_date
@@ -95,7 +99,7 @@ class OCICostCollector:
         missing = [iid for iid in instance_ids if iid not in instance_metadata]
         successful, failed = 0, 0
         if missing:
-            fetcher = OCIMetadataFetcher(max_workers=30)
+            fetcher = OCIMetadataFetcher(max_workers=4)
             fetched, successful, failed = fetcher.fetch_metadata(missing)
             instance_metadata.update(fetched)
             fresh.update({iid: {'fetched_at': now, 'metadata': metadata} for iid, metadata in fetched.items()})
@@ -162,7 +166,7 @@ class OCICostCollector:
         
         # Save basic merged CSV
         output_csv = self.output_dir / 'output.csv'
-        df_merged.to_csv(output_csv, index=False)
+        write_cost_csv(df_merged, output_csv)
         print(f"✅ Basic merged CSV saved to {output_csv}")
         
         # Extract compute instance IDs
@@ -211,7 +215,7 @@ class OCICostCollector:
         
         # Save final enriched CSV
         output_merged = self.output_dir / 'output_merged.csv'
-        df_merged.to_csv(output_merged, index=False)
+        write_cost_csv(df_merged, output_merged)
         print(f"✅ Final enriched CSV saved to {output_merged}")
         
         return df_merged
@@ -243,14 +247,142 @@ class OCICostCollector:
             
             # Save enhanced version with tags
             output_with_tags = self.output_dir / 'output_with_tags.csv'
-            df_merged.to_csv(output_with_tags, index=False)
+            write_cost_csv(df_merged, output_with_tags)
             print(f"✅ Enhanced CSV with tags saved to {output_with_tags}")
         
         return df_merged
     
+    def _collect_streaming(self, skip_cost, skip_usage, skip_enrichment,
+                           skip_recommendations, growth_collection, currency):
+        """Bound memory by API page, export chunk and worker count, not tenancy size."""
+        from itertools import islice
+        if __package__:
+            from .utils.datasets import DiskDatasetStore
+            from .utils.parallel import bounded_map
+            from .utils.feedback import BillingProgress, report_progress, progress_heartbeat
+        else:
+            from utils.datasets import DiskDatasetStore
+            from utils.parallel import bounded_map
+            from utils.feedback import BillingProgress, report_progress, progress_heartbeat
+
+        report_progress('Starting OCI FinOps collection')
+        report_progress(f'Date range: {self.from_date} inclusive to {self.to_date} exclusive; '
+                        f'growth={"enabled" if growth_collection else "disabled"}')
+        failed = False
+        report_progress('Preparing billing collection')
+        with DiskDatasetStore() as store:
+            api = OCIAPIExecutor(self.tenancy_ocid, self.home_region, output_dir=self.output_dir)
+            def jobs():
+                start = date.fromisoformat(self.from_date)
+                stop = date.fromisoformat(self.to_date)
+                partition = 0
+                while start < stop:
+                    end = min(start + timedelta(days=1), stop)
+                    for kind, skip, fields in (
+                        ('COST', skip_cost, ['service', 'skuName', 'resourceId', 'compartmentPath']),
+                        ('USAGE', skip_usage, ['resourceId', 'platform', 'region', 'skuPartNumber'])):
+                        if not skip:
+                            yield kind, fields, start.isoformat(), start.isoformat(), end.isoformat()
+                    start = end
+                    partition += 1
+            def collect_page_window(job):
+                return api.collect_to_store(store, *job, progress=progress)
+            days = max(0, (date.fromisoformat(self.to_date) - date.fromisoformat(self.from_date)).days)
+            total_windows = days * (int(not skip_cost) + int(not skip_usage))
+            with BillingProgress(total_windows) as progress, ThreadPoolExecutor(max_workers=4) as executor:
+                for success in bounded_map(executor, collect_page_window, jobs(), 4):
+                    failed = failed or not success
+            cost = None if skip_cost else store.dataset('COST')
+            usage = None if skip_usage else store.dataset('USAGE')
+            if not (skip_cost and skip_usage):
+                report_progress('Raw billing JSON: saving original records')
+                with progress_heartbeat('Raw billing JSON'):
+                    store.write_raw_json(self.output_dir / 'out.json', {'call1': cost, 'call2': usage})
+                report_progress('Raw billing JSON: saved')
+
+            if not skip_cost and not skip_usage and not skip_enrichment:
+                report_progress('Metadata enrichment: loading cached instance metadata')
+                now = time.time()
+                cached = store.load_metadata_cache(self.output_dir / 'instance_metadata_cache.json',
+                                          self.tenancy_ocid, self.home_region, now)
+                report_progress(f'Metadata enrichment: {cached} fresh cached entries available')
+                missing = iter(store.missing_instance_ids())
+                fetcher = OCIMetadataFetcher(max_workers=4)
+                while True:
+                    batch = list(islice(missing, 200))
+                    if not batch:
+                        break
+                    report_progress(f'Metadata enrichment: requesting batch of {len(batch)} instances')
+                    with progress_heartbeat('Metadata enrichment'):
+                        metadata, successes, failures = fetcher.fetch_metadata(batch)
+                    store.add_metadata(metadata, fetched_at=now)
+                    report_progress(f'Metadata batch: {successes} fetched, {failures} unavailable')
+                with progress_heartbeat('Metadata cache export'):
+                    store.write_metadata_files(self.output_dir, self.tenancy_ocid, self.home_region, now)
+                report_progress('Metadata enrichment: complete')
+
+            growth = None
+            if growth_collection:
+                growth = OCIGrowthCollector(tenancy_ocid=self.tenancy_ocid,
+                                           home_region=self.home_region, output_dir=str(self.output_dir))
+                try:
+                    report_progress('Growth/FinOps: starting inventory, tags, metrics and audit collection')
+                    with progress_heartbeat('Growth/FinOps'):
+                        growth.collect_all(from_date=self.from_date, to_date=self.to_date, cost_data=cost)
+                    report_progress('Growth/FinOps: complete')
+                except Exception as error:
+                    report_progress(f'Growth/FinOps collection failed: {type(error).__name__}')
+                    failed = True
+
+            if not skip_cost and not skip_usage:
+                fields = sorted(set(store.merged_fieldnames) | {'currency'})
+                enriched_fields = sorted(set(fields) | (set() if skip_enrichment else {'shape', 'resourceName'}))
+                if growth is not None:
+                    enriched_fields = sorted(set(enriched_fields) | {'has_tags', 'tag_count', 'tag_namespaces',
+                                             'primary_cost_center', 'primary_environment', 'tags'})
+                report_progress('CSV export: merging and enriching billing records')
+                with progress_heartbeat('CSV export'):
+                    exported = 0
+                    first = True
+                    for chunk_index, frame in enumerate(store.iter_merged_chunks(chunk_size=2000), 1):
+                        mode = 'w' if first else 'a'
+                        write_cost_csv(frame, self.output_dir / 'output.csv', mode=mode,
+                                       header=first, fieldnames=fields)
+                        if not skip_enrichment:
+                            metadata = store.lookup_metadata(frame['resourceId'].dropna().unique())
+                            for column in ('shape', 'resourceName'):
+                                if column not in frame:
+                                    frame[column] = None
+                                missing_values = frame[column].isna() | frame[column].eq('')
+                                values = frame['resourceId'].map({key: value.get(column) for key, value in metadata.items()})
+                                frame.loc[missing_values & values.notna(), column] = values
+                        if growth is not None:
+                            frame = growth.enrich_dataframe_with_tags(frame)
+                        write_cost_csv(frame, self.output_dir / 'output_merged.csv', mode=mode,
+                                       header=first, fieldnames=enriched_fields)
+                        exported += len(frame)
+                        if first or chunk_index % 10 == 0:
+                            report_progress(f'CSV export: {exported} COST records saved')
+                        first = False
+                    if first:
+                        write_cost_csv(pd.DataFrame(columns=fields), self.output_dir / 'output.csv')
+                        write_cost_csv(pd.DataFrame(columns=enriched_fields), self.output_dir / 'output_merged.csv')
+                    report_progress(f'CSV export: complete ({exported} COST records)')
+            if not skip_recommendations:
+                report_progress('Recommendations: starting Oracle Cloud Advisor collection')
+                with progress_heartbeat('Recommendations'):
+                    OCIRecommendationsFetcher(tenancy_ocid=self.tenancy_ocid, region=self.home_region,
+                                              output_dir=str(self.output_dir), currency=currency).fetch_and_save()
+                report_progress('Recommendations: complete')
+        report_progress('PARTIAL COLLECTION' if failed else 'Collection complete')
+        return not failed
+
     def collect(self, skip_cost=False, skip_usage=False, skip_enrichment=False, 
-                skip_recommendations=False, growth_collection=False, currency='USD'):
+                skip_recommendations=False, growth_collection=True, currency='USD'):
         """Main collection workflow with optional stage control."""
+        if self.streaming:
+            return self._collect_streaming(skip_cost, skip_usage, skip_enrichment,
+                                           skip_recommendations, growth_collection, currency)
         print("="*70)
         print("🚀 OCI Cost Report Collector v2.2.1")
         print("="*70)
@@ -327,7 +459,7 @@ class OCICostCollector:
                 )
                 if df_merged is not None:
                     df_merged = growth_collector_obj.enrich_dataframe_with_tags(df_merged)
-                    df_merged.to_csv(self.output_dir / 'output_merged.csv', index=False)
+                    write_cost_csv(df_merged, self.output_dir / 'output_merged.csv')
             except Exception as error:
                 print(f"⚠️ Growth/FinOps collection failed: {error}")
                 collection_failed = True
@@ -381,29 +513,54 @@ class OCICostCollector:
         return not collection_failed
 
 
-def main():
+def _main(argv=None):
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description='OCI Cost Report Collector v2.2.1',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False
     )
     
-    parser.add_argument('tenancy_ocid', help='OCI Tenancy OCID')
-    parser.add_argument('home_region', help='Home region (e.g., us-ashburn-1)')
-    parser.add_argument('from_date', help='Start date (YYYY-MM-DD)')
-    parser.add_argument('to_date', help='End date (YYYY-MM-DD)')
+    parser.add_argument('legacy', nargs='*', metavar='POSITIONAL',
+                        help='Legacy: tenancy_ocid home_region from_date to_date')
+    parser.add_argument('--tenancy-ocid', help='OCI Tenancy OCID')
+    parser.add_argument('--home-region', help='Home region (e.g., us-ashburn-1)')
+    parser.add_argument('--from', '--from-date', dest='from_date', help='Start date (YYYY-MM-DD, inclusive)')
+    parser.add_argument('--to', '--to-date', dest='to_date', help='End date (YYYY-MM-DD, exclusive)')
     parser.add_argument('--currency', default='USD', help='Requested currency metadata; Advisor estimates remain USD (no conversion)')
     parser.add_argument('--skip-cost', action='store_true', help='Skip cost data collection')
     parser.add_argument('--skip-usage', action='store_true', help='Skip usage data collection')
     parser.add_argument('--skip-enrichment', action='store_true', help='Skip instance metadata enrichment')
     parser.add_argument('--skip-recommendations', action='store_true', help='Skip recommendations collection')
-    parser.add_argument('--only-recommendations', action='store_true', help='Only fetch recommendations (skip all other stages)')
-    parser.add_argument('--growth-collection', action='store_true', 
-                        help='Collect tags and regional FinOps inventory, attachments, and monitoring evidence')
-    parser.add_argument('--only-growth', action='store_true', 
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--only-recommendations', action='store_true', help='Only fetch recommendations (skip all other stages)')
+    growth = parser.add_mutually_exclusive_group()
+    growth.add_argument('--growth-collection', action='store_true', default=True,
+                        help='Collect tags, FinOps inventory, attachments and monitoring (default: enabled)')
+    growth.add_argument('--no-growth-collection', dest='growth_collection', action='store_false',
+                        help='Disable growth/FinOps collection')
+    modes.add_argument('--only-growth', action='store_true',
                         help='Only run growth collection (skip cost/usage data collection)')
     
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    names = ('tenancy_ocid', 'home_region', 'from_date', 'to_date')
+    if args.legacy:
+        if len(args.legacy) != 4 or any(getattr(args, name) is not None for name in names):
+            parser.error('Use either four positional arguments or all four named options, without mixing them.')
+        for name, value in zip(names, args.legacy):
+            setattr(args, name, value)
+    elif any(not getattr(args, name) for name in names):
+        parser.error('--tenancy-ocid, --home-region, --from and --to are required.')
+    try:
+        dates = [date.fromisoformat(getattr(args, name)) for name in ('from_date', 'to_date')]
+        if any(value.isoformat() != getattr(args, name) for value, name in zip(dates, ('from_date', 'to_date'))):
+            raise ValueError('Dates must use YYYY-MM-DD.')
+    except ValueError:
+        parser.error('Dates must be valid calendar dates in YYYY-MM-DD format.')
+    if dates[0] >= dates[1]:
+        parser.error('--from must be earlier than the exclusive --to date.')
+    if args.only_growth and not args.growth_collection:
+        parser.error('--only-growth cannot be combined with --no-growth-collection.')
     
     # Handle only-growth mode
     if args.only_growth:
@@ -414,7 +571,8 @@ def main():
             tenancy_ocid=args.tenancy_ocid,
             home_region=args.home_region,
             from_date=args.from_date,
-            to_date=args.to_date
+            to_date=args.to_date,
+            streaming=True
         )
         success = collector.collect(
             skip_cost=True,
@@ -431,7 +589,8 @@ def main():
         tenancy_ocid=args.tenancy_ocid,
         home_region=args.home_region,
         from_date=args.from_date,
-        to_date=args.to_date
+        to_date=args.to_date,
+        streaming=True
     )
     
     # Handle only-recommendations mode
@@ -464,6 +623,14 @@ def main():
     )
     sys.exit(0 if success else 1)
 
+
+def main(argv=None):
+    if __package__:
+        from .distribution import oci_worker_pool
+    else:
+        from distribution import oci_worker_pool
+    with oci_worker_pool(max_workers=4):
+        return _main(argv)
 
 if __name__ == '__main__':
     main()

@@ -8,6 +8,7 @@ import shlex
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from .currency import format_amount
 
 
 def load_evidence(directory):
@@ -240,6 +241,12 @@ def export_reports(report, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     prepared = datetime.now(timezone.utc).isoformat()
+    def display(key, value):
+        if key in ('observed_cost', 'estimated_monthly_savings_usd'):
+            return format_amount(value)
+        if key == 'observed_costs':
+            return {currency: format_amount(amount) for currency, amount in value.items()}
+        return value
     def top(rows):
         currencies = sorted({row['currency'] for row in rows})
         return [row for currency in currencies
@@ -249,15 +256,15 @@ def export_reports(report, directory):
              'Observed spend covers the collected interval; it is not a monthly savings estimate. Refunds are retained. No currencies are combined.',
              f"Measurement period (end exclusive): {json.dumps(report['measurement_period'])}", '']
     for currency, amount in sorted(report['totals'].items()):
-        lines.append(f'- {currency}: {amount:,.2f}')
+        lines.append(f'- {currency}: {format_amount(amount)}')
     lines += ['', '## Savings screening scenario', '',
-              f"Advisor screening estimate: {report['advisor_estimates_usd']:,.2f} USD/month.",
+              f"Advisor screening estimate: {format_amount(report['advisor_estimates_usd'])} USD/month.",
               report['estimate_method'], '', '## Spend by service and currency', '']
-    lines += [f"- {item['service']} / {item['currency']}: {item['observed_cost']:,.2f}" for item in top(report['services'])]
+    lines += [f"- {item['service']} / {item['currency']}: {format_amount(item['observed_cost'])}" for item in top(report['services'])]
     lines += ['', '## Spend by resource (top 10 per currency)', '', '[Complete resource spend CSV](cost_savings_resources.csv)', '']
-    lines += [f"- {item['resource_id']} / {item['region']} / {item['service']} / {item['currency']}: {item['observed_cost']:,.2f}" for item in top(report['resources'])]
+    lines += [f"- {item['resource_id']} / {item['region']} / {item['service']} / {item['currency']}: {format_amount(item['observed_cost'])}" for item in top(report['resources'])]
     lines += ['', '## Spend by compartment (top 10 per currency)', '', '[Complete compartment spend CSV](cost_savings_compartments.csv)', '']
-    lines += [f"- {item['compartment_path']} / {item['currency']}: {item['observed_cost']:,.2f}" for item in top(report['compartments'])]
+    lines += [f"- {item['compartment_path']} / {item['currency']}: {format_amount(item['observed_cost'])}" for item in top(report['compartments'])]
     lines += ['', '## Action and status summary', '']
     counts = defaultdict(int)
     for action in report['actions']:
@@ -280,7 +287,8 @@ def export_reports(report, directory):
               '', '## Top 20 action reviews', '',
               '[Complete execution runbook](cost_savings_runbook.html) | [Full action tracker CSV](cost_savings_actions.csv)', '']
     for action in report['actions'][:20]:
-        lines.append(f"- {action['resource_id']} / {action['region']} / {action['compartment_id']} / {action['action']} / {action['status']} / estimate {action['estimated_monthly_savings_usd']} USD/month / recommendation {action['recommendation_id']}")
+        estimate = format_amount(action['estimated_monthly_savings_usd']) or 'Unknown'
+        lines.append(f"- {action['resource_id']} / {action['region']} / {action['compartment_id']} / {action['action']} / {action['status']} / estimate {estimate} USD/month / recommendation {action['recommendation_id']}")
     if not report['actions']:
         lines.append('No evidence-backed actions available. Collect FinOps and Advisor evidence; spend alone does not establish safe savings.')
     content = '\n'.join(lines) + '\n'
@@ -292,7 +300,7 @@ def export_reports(report, directory):
         return html.escape(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value))
     def table(rows, columns):
         headings = ''.join(f'<th>{escape(label)}</th>' for _, label in columns)
-        body = ''.join('<tr>' + ''.join(f'<td>{escape(row.get(key, "Unknown"))}</td>' for key, _ in columns) + '</tr>' for row in rows)
+        body = ''.join('<tr>' + ''.join(f'<td>{escape(display(key, row.get(key, "Unknown")))}</td>' for key, _ in columns) + '</tr>' for row in rows)
         return f'<table><thead><tr>{headings}</tr></thead><tbody>{body}</tbody></table>'
     page = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Executive cost savings review</title>',
             '<style>body{font:15px system-ui,sans-serif;max-width:1100px;margin:2rem auto;color:#182534;padding:1rem}h1,h2,h3{color:#173d57}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #cbd5df;padding:.55rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eaf0f5}details{margin:1rem 0}a{color:#12618a}@media print{body{font-size:10pt;margin:0;max-width:none}thead{display:table-header-group}tr{break-inside:avoid}h2,h3{break-after:avoid}a{color:inherit}}</style></head><body>',
@@ -300,7 +308,7 @@ def export_reports(report, directory):
             '<h2>Financial baseline</h2><p>Observed spend for the collected interval; refunds retained. Currencies are never combined. Observed cost is not guaranteed savings.</p>',
             table([{'currency': c, 'observed_cost': v} for c, v in sorted(report['totals'].items())], [('currency', 'Currency'), ('observed_cost', 'Observed spend')]),
             '<h3>Measurement period</h3>', table([report['measurement_period']], [(key, key.replace('_', ' ').title()) for key in report['measurement_period']]),
-            '<h2>Savings screening scenario</h2>', f'<p>{escape(report["advisor_estimates_usd"])} USD/month. {escape(report["estimate_method"])}</p>',
+            '<h2>Savings screening scenario</h2>', f'<p>{format_amount(report["advisor_estimates_usd"])} USD/month. {escape(report["estimate_method"])}</p>',
             '<h2>Spend drivers: top 10 per currency</h2><h3>Services</h3>',
             table(top(report['services']), [('service', 'Service'), ('currency', 'Currency'), ('observed_cost', 'Observed spend')]),
             '<h3>Resources</h3><p><a href="cost_savings_resources.csv">Complete resource spend CSV</a></p>',
@@ -330,7 +338,7 @@ def export_reports(report, directory):
                           '<h2>Complete collection warnings</h2><ul>' + ''.join(f'<li>{escape(warning)}</li>' for warning in report['warnings']) + '</ul>']
     for index, action in enumerate(report['actions'], 1):
         runbook += [f'<h3>Review {index}: {escape(action["resource_id"])} / {escape(action["action"])}</h3>',
-                    table([{'field': key, 'detail': value} for key, value in action.items()], [('field', 'Field'), ('detail', 'Evidence / execution detail')])]
+                    table([{'field': key, 'detail': display(key, value)} for key, value in action.items()], [('field', 'Field'), ('detail', 'Evidence / execution detail')])]
     if not report['actions']:
         runbook.append('<p>No evidence-backed actions available.</p>')
     runbook.append('</body></html>')
@@ -342,11 +350,12 @@ def export_reports(report, directory):
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         for action in report['actions']:
-            writer.writerow({key: json.dumps(value) if isinstance(value, (dict, list)) else value for key, value in action.items()})
+            exported = {key: display(key, value) for key, value in action.items()}
+            writer.writerow({key: json.dumps(value) if isinstance(value, (dict, list)) else value for key, value in exported.items()})
     for name, rows, fields in [('resources_csv', report['resources'], ['resource_id', 'region', 'service', 'currency', 'observed_cost']),
                                ('compartments_csv', report['compartments'], ['compartment_path', 'currency', 'observed_cost'])]:
         with paths[name].open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows({**row, 'observed_cost': format_amount(row['observed_cost'])} for row in rows)
     return paths
