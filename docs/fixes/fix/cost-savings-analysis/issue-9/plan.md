@@ -27,3 +27,14 @@ Approved scope: add a new self-guided notebook without modifying the existing Fi
 - Full regression: `python3 -m unittest discover -s tests -v`.
 
 Spec-driven mode disabled. Implementation remains gated on the remote tracking draft PR.
+
+## Approved steering: complete execution detail and executive reporting
+User expanded the scope to capture what can be saved, where each resource is located, how to execute approved changes, and how to explain the outcome later. Include exact resource identifiers, evidence-backed names/service/region/compartment, prerequisites, risks, rollback and verification. Export offline Markdown/HTML/CSV executive reports with currency-separated service/action/status summaries. Commands are review templates only; no infrastructure mutations. Unknown evidence and overlapping savings remain explicit.
+
+## Coordinator audit refinements
+Expose complete resource and compartment spend summaries, retaining Unknown identities and refunds. Preserve Advisor category summaries as summary-only, nonadditive backlog items even when resource actions are absent. Correct notebook intake to `--growth-collection` and document standalone archive extraction. These refinements satisfy the approved comprehensive scope.
+
+## Executive presentation refinement
+Show readable HTML headings/tables and top 10 spend drivers per currency in the executive main section. Preserve every spend-driver row in linked resource/compartment CSV appendices and full action details in the execution appendix/action CSV. Add UTC preparation timestamp.
+
+Outcome tracking: add blank editable action CSV fields for owner, approval/execution dates, baseline/comparison periods, verified savings/currency/evidence and outcome notes. Notebook documents later updates without claiming savings before verification.
