@@ -1,7 +1,7 @@
 # Issue 14: performance fixes
 
 Issue: https://github.com/dralquinta/OCI-FinOps-Helper/issues/14
-Branch: `14-performance-fixes`; base: `develop`; tracking PR: pending.
+Branch: `14-performance-fixes`; base: `develop`; tracking PR: https://github.com/dralquinta/OCI-FinOps-Helper/pull/15 (draft).
 Mode: new task; spec-driven disabled. Scope and plan approved by the user.
 
 ## Approved plan
