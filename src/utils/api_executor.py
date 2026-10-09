@@ -6,6 +6,7 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode
 from .progress import ProgressSpinner
@@ -191,7 +192,7 @@ class OCIAPIExecutor:
     
     def make_parallel_calls(self, calls):
         """
-        Execute multiple API calls in sequence with clear separation.
+        Execute independent API calls with at most two concurrent workers.
         
         Args:
             calls: List of tuples (query_type, group_by_fields, call_name, from_date, to_date)
@@ -199,21 +200,10 @@ class OCIAPIExecutor:
         Returns:
             List of API responses in the same order as input
         """
-        results = []
-        
-        for query_type, group_by_fields, call_name, from_date, to_date in calls:
-            print(f"\n{'='*70}")
-            print(f"🔄 Making {call_name}")
-            print(f"{'='*70}")
-            
-            result = self.make_api_call(
-                query_type=query_type,
-                group_by_fields=group_by_fields,
-                call_name=call_name,
-                from_date=from_date,
-                to_date=to_date
-            )
-            
-            results.append(result)
-        
-        return results
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(
+                self.make_api_call, query_type=query_type,
+                group_by_fields=group_by_fields, call_name=call_name,
+                from_date=from_date, to_date=to_date
+            ) for query_type, group_by_fields, call_name, from_date, to_date in calls]
+            return [future.result() for future in futures]

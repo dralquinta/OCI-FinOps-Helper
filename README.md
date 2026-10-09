@@ -106,6 +106,8 @@ chmod +x collector.sh
 
 The collector follows a multi-step process to gather comprehensive cost data:
 
+The independent COST and USAGE requests run concurrently with at most two workers; each request still collects all pages before its results are used.
+
 ### Step 1: COST API Call
 Queries OCI Usage API with `queryType: COST` to retrieve:
 - Service name
@@ -122,7 +124,7 @@ Queries OCI Usage API with `queryType: USAGE` to retrieve:
 - Additional usage details
 
 ### Step 3: Data Merge
-Merges both datasets using `resourceId + timeUsageStarted` as composite key.
+Attaches unambiguous USAGE metadata using resourceId and timeUsageStarted. Each COST row appears once, so repeated USAGE SKU rows cannot inflate monetary totals. Conflicting USAGE metadata and incomplete keys remain unassigned; existing COST metadata is preserved.
 
 ### Step 4: Instance Discovery
 Scans merged data to identify compute instances (resourceId containing `instance.oc1`).
@@ -164,7 +166,7 @@ The script generates the following files in the working directory:
 **Raw API responses** from both COST and USAGE calls (useful for debugging).
 
 ### 4. instance_metadata.json
-**Cached instance metadata** to avoid redundant API calls in subsequent runs.
+**Instance metadata snapshot** used to enrich the current run. The separate `instance_metadata_cache.json` stores successful metadata with timestamps for reuse for 24 hours, scoped to the tenancy and home region. Failed lookups are retried; expired or corrupt entries are refreshed.
 
 ### 5. recommendations.out
 **Human-readable actionable recommendations** from Oracle Cloud Advisor with:
@@ -474,7 +476,7 @@ tail -n +2 output_merged.csv | awk -F, '{sum+=$7} END {print "Total Cost: $" sum
 
 ### Reuse Cached Metadata
 
-Keep `instance_metadata.json` in the directory to reuse instance metadata across multiple date range queries (saves API calls).
+Keep `instance_metadata_cache.json` in the output directory to reuse successful instance lookups for 24 hours across date ranges for the same tenancy and home region. Delete it to force a refresh. `instance_metadata.json` is the current-run snapshot. Enrichment uses vectorized column mapping; `--skip-enrichment` makes no instance metadata requests.
 
 ### Process Large Date Ranges
 

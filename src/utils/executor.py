@@ -41,16 +41,16 @@ class OCIMetadataFetcher:
             
             if result.returncode == 0:
                 instance_data = json.loads(result.stdout)
-                if 'data' in instance_data:
+                if isinstance(instance_data, dict) and isinstance(instance_data.get('data'), dict):
                     data = instance_data['data']
                     return instance_id, {
-                        'shape': data.get('shape', ''),
-                        'resourceName': data.get('display-name', '')
+                        'shape': data.get('shape') or '',
+                        'resourceName': data.get('display-name') or ''
                     }
             
             return instance_id, None
         
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError, ValueError, TypeError):
             return instance_id, None
     
     def fetch_metadata(self, instance_ids, progress_callback=None):
@@ -64,6 +64,7 @@ class OCIMetadataFetcher:
         Returns:
             Tuple of (instance_metadata dict, successful count, failed count)
         """
+        instance_ids = list(dict.fromkeys(instance_ids))
         instance_metadata = {}
         successful = 0
         failed = 0

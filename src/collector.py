@@ -10,6 +10,7 @@ import sys
 import subprocess
 import time
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pandas as pd
 
@@ -67,8 +68,40 @@ class OCICostCollector:
         print(f"Using multi-threaded executor for faster processing...\n")
         
         # Use OCIMetadataFetcher for parallel processing with built-in progress tracking
-        fetcher = OCIMetadataFetcher(max_workers=30)
-        instance_metadata, successful, failed = fetcher.fetch_metadata(instance_ids)
+        cache_file = self.output_dir / 'instance_metadata_cache.json'
+        now = time.time()
+        entries = {}
+        try:
+            cache = json.loads(cache_file.read_text())
+            if (isinstance(cache, dict) and cache.get('tenancy') == self.tenancy_ocid
+                    and cache.get('region') == self.home_region
+                    and isinstance(cache.get('entries'), dict)):
+                entries = cache['entries']
+        except (OSError, ValueError):
+            pass
+        fresh = {}
+        for instance_id, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            fetched_at = entry.get('fetched_at')
+            metadata = entry.get('metadata')
+            if (isinstance(fetched_at, (int, float)) and 0 <= now - fetched_at < 86400
+                    and isinstance(metadata, dict)
+                    and all(isinstance(metadata.get(field, ''), str) for field in ('shape', 'resourceName'))):
+                fresh[instance_id] = entry
+        instance_ids = list(dict.fromkeys(instance_ids))
+        instance_metadata = {iid: fresh[iid]['metadata'] for iid in instance_ids if iid in fresh}
+        print(f"Reusing {len(instance_metadata)} fresh cached instance metadata entries")
+        missing = [iid for iid in instance_ids if iid not in instance_metadata]
+        successful, failed = 0, 0
+        if missing:
+            fetcher = OCIMetadataFetcher(max_workers=30)
+            fetched, successful, failed = fetcher.fetch_metadata(missing)
+            instance_metadata.update(fetched)
+            fresh.update({iid: {'fetched_at': now, 'metadata': metadata} for iid, metadata in fetched.items()})
+        temporary = cache_file.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'tenancy': self.tenancy_ocid, 'region': self.home_region, 'entries': fresh}))
+        temporary.replace(cache_file)
         
         print(f"\n✅ Successfully fetched {successful} instance metadata")
         if failed > 0:
@@ -76,7 +109,7 @@ class OCICostCollector:
         
         return instance_metadata
     
-    def merge_and_enrich(self, data1, data2):
+    def merge_and_enrich(self, data1, data2, skip_enrichment=False):
         """Merge two API responses and enrich with instance metadata."""
         print(f"\n{'='*70}")
         print(f"🔄 Merging and Enriching Data")
@@ -100,24 +133,30 @@ class OCICostCollector:
         print(f"📋 First dataset (COST): {len(df1)} records")
         print(f"📋 Second dataset (USAGE): {len(df2)} records")
         
-        # Create merge key (resourceId + timeUsageStarted)
-        df1['merge_key'] = df1['resourceId'].astype(str) + '_' + df1['timeUsageStarted'].astype(str)
-        df2['merge_key'] = df2['resourceId'].astype(str) + '_' + df2['timeUsageStarted'].astype(str)
-        
-        # Select columns from df2 to avoid duplicates
-        df2_cols = ['merge_key', 'platform', 'region', 'skuPartNumber', 'shape', 'resourceName']
-        df2_cols = [col for col in df2_cols if col in df2.columns]
-        
-        # Merge datasets
-        df_merged = df1.merge(
-            df2[df2_cols],
-            on='merge_key',
-            how='left',
-            suffixes=('', '_from_call2')
-        )
-        
-        # Drop merge key
-        df_merged = df_merged.drop('merge_key', axis=1)
+        # USAGE has a different grain from COST: attach only unambiguous
+        # metadata per resource/day, never multiply the monetary rows.
+        keys = ['resourceId', 'timeUsageStarted']
+        for frame in (df1, df2):
+            for key in keys:
+                if key not in frame:
+                    frame[key] = pd.Series(index=frame.index, dtype=object)
+        columns = [column for column in ('platform', 'region', 'skuPartNumber', 'shape', 'resourceName')
+                   if column in df2]
+        if columns and not df2.empty:
+            metadata = df2.loc[df2[keys].notna().all(axis=1) & df2[keys].ne('').all(axis=1), keys + columns].copy()
+            metadata[columns] = metadata[columns].replace('', pd.NA)
+            grouped = metadata.groupby(keys, sort=False)
+            unique_values = grouped[columns].nunique(dropna=True)
+            collapsed = grouped[columns].first().where(unique_values.eq(1)).reset_index()
+            df_merged = df1.merge(collapsed, on=keys, how='left', validate='many_to_one',
+                                  suffixes=('', '_from_usage'))
+            for column in columns:
+                if column in df1:
+                    missing = df_merged[column].isna() | df_merged[column].eq('')
+                    df_merged.loc[missing, column] = df_merged.loc[missing, column + '_from_usage']
+                    df_merged = df_merged.drop(columns=column + '_from_usage')
+        else:
+            df_merged = df1.copy()
         
         print(f"✅ Merged dataset: {len(df_merged)} records with {len(df_merged.columns)} columns")
         
@@ -128,7 +167,7 @@ class OCICostCollector:
         
         # Extract compute instance IDs
         compute_instances = df_merged[
-            df_merged['resourceId'].str.contains('instance.oc1', na=False, case=False)
+            df_merged['resourceId'].astype('string').str.contains('instance.oc1', na=False, case=False, regex=False)
         ]['resourceId'].unique().tolist()
         
         spinner.stop()
@@ -136,7 +175,7 @@ class OCICostCollector:
         print(f"\n📊 Found {len(compute_instances)} unique compute instances")
         
         # Fetch instance metadata if we have instances
-        if len(compute_instances) > 0:
+        if len(compute_instances) > 0 and not skip_enrichment:
             instance_metadata = self.fetch_instance_metadata(compute_instances)
             
             # Save metadata cache
@@ -150,17 +189,13 @@ class OCICostCollector:
             spinner2 = ProgressSpinner("Processing enrichment...")
             spinner2.start()
             
-            def enrich_row(row):
-                resource_id = row.get('resourceId', '')
-                if resource_id in instance_metadata:
-                    metadata = instance_metadata[resource_id]
-                    if pd.isna(row.get('shape')) or row.get('shape') == '':
-                        row['shape'] = metadata.get('shape', '')
-                    if pd.isna(row.get('resourceName')) or row.get('resourceName') == '':
-                        row['resourceName'] = metadata.get('resourceName', '')
-                return row
-            
-            df_merged = df_merged.apply(enrich_row, axis=1)
+            for column in ('shape', 'resourceName'):
+                if column not in df_merged:
+                    df_merged[column] = pd.Series(index=df_merged.index, dtype=object)
+                missing = df_merged[column].isna() | df_merged[column].eq('')
+                values = {iid: metadata.get(column, '') for iid, metadata in instance_metadata.items()}
+                mapped = df_merged['resourceId'].map(values)
+                df_merged.loc[missing & mapped.notna(), column] = mapped
             spinner2.stop()
             
             # Count enriched records
@@ -246,37 +281,33 @@ class OCICostCollector:
         df_merged = None
         collection_failed = False
         
-        # First API call - COST query with service details
+        queries = []
         if not skip_cost:
-            data1 = self.make_api_call(
-                query_type="COST",
-                group_by_fields=["service", "skuName", "resourceId", "compartmentPath"],
-                call_name="COST_API_Call"
-            )
-            
-            if data1 is None:
-                print("\n❌ Failed to retrieve cost data")
-                collection_failed = True
-        
-        # Second API call - USAGE query with platform details
+            queries.append(("COST", ["service", "skuName", "resourceId", "compartmentPath"], "COST_API_Call"))
         if not skip_usage:
-            data2 = self.make_api_call(
-                query_type="USAGE",
-                group_by_fields=["resourceId", "platform", "region", "skuPartNumber"],
-                call_name="USAGE_API_Call"
-            )
-            
-            if data2 is None:
-                print("\n❌ Failed to retrieve usage data")
-                collection_failed = True
-        
+            queries.append(("USAGE", ["resourceId", "platform", "region", "skuPartNumber"], "USAGE_API_Call"))
+        if queries:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(self.make_api_call, query_type=kind,
+                           group_by_fields=fields, call_name=name)
+                           for kind, fields, name in queries]
+                for (kind, _, _), future in zip(queries, futures):
+                    result = future.result()
+                    if kind == "COST":
+                        data1 = result
+                    else:
+                        data2 = result
+                    if result is None:
+                        print(f"Failed to retrieve {kind} data")
+                        collection_failed = True
+
         # Merge and enrich
         if data1 is not None and data2 is not None:
             try:
                 if skip_enrichment:
                     print("\n⚠️  Skipping enrichment - saving basic merged data only")
                     # Still need to do basic merge even if skipping enrichment
-                df_merged = self.merge_and_enrich(data1, data2)
+                df_merged = self.merge_and_enrich(data1, data2, skip_enrichment=True) if skip_enrichment else self.merge_and_enrich(data1, data2)
                 
             except Exception as e:
                 print(f"\n❌ Merge and enrichment failed: {e}")

@@ -5,10 +5,24 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import threading
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from src.utils.api_executor import OCIAPIExecutor
+
+
+class ParallelUsageTests(unittest.TestCase):
+    def test_parallel_calls_overlap_and_preserve_input_order_and_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executor = OCIAPIExecutor('tenancy', 'home', directory)
+            barrier = threading.Barrier(2)
+            def request(**kwargs):
+                barrier.wait(timeout=3)
+                return None if kwargs['query_type'] == 'USAGE' else {'items': ['cost']}
+            calls = [('COST', [], 'cost', 'start', 'end'), ('USAGE', [], 'usage', 'start', 'end')]
+            with patch.object(executor, 'make_api_call', side_effect=request), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(executor.make_parallel_calls(calls), [{'items': ['cost']}, None])
 
 
 class UsagePaginationTests(unittest.TestCase):
