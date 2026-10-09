@@ -5,6 +5,10 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 
 import json
 import subprocess
+try:
+    from ..distribution import run_oci
+except ImportError:  # Direct src/collector.py execution
+    from distribution import run_oci
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -57,7 +61,7 @@ class OCIGrowthCollector:
         spinner.start()
         
         try:
-            result = subprocess.run(
+            result = run_oci(
                 command,
                 capture_output=True,
                 text=True,
@@ -192,7 +196,7 @@ class OCIGrowthCollector:
         ]
         
         try:
-            result = subprocess.run(
+            result = run_oci(
                 command,
                 capture_output=True,
                 text=True,
@@ -286,7 +290,7 @@ class OCIGrowthCollector:
         ]
         
         try:
-            result = subprocess.run(
+            result = run_oci(
                 command,
                 capture_output=True,
                 text=True,
@@ -870,7 +874,7 @@ class OCIGrowthCollector:
             ]
             
             try:
-                result = subprocess.run(
+                result = run_oci(
                     command,
                     capture_output=True,
                     text=True,
@@ -986,7 +990,7 @@ class OCIGrowthCollector:
             ]
             
             try:
-                result = subprocess.run(
+                result = run_oci(
                     command,
                     capture_output=True,
                     text=True,

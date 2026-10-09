@@ -5,6 +5,10 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 
 import json
 import subprocess
+try:
+    from ..distribution import run_oci
+except ImportError:  # Direct src/collector.py execution
+    from distribution import run_oci
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .progress import ProgressTracker
 
@@ -27,7 +31,7 @@ class OCIMetadataFetcher:
             region = parts[3]
             
             # Call OCI CLI to get instance details
-            result = subprocess.run(
+            result = run_oci(
                 [
                     'oci', 'compute', 'instance', 'get',
                     '--instance-id', instance_id,

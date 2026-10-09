@@ -33,3 +33,9 @@ customer_files
 # Graphify generated output
 graphify-out/
 .graphify/
+
+# Standalone distribution build outputs
+.build-venv/
+build/
+dist/
+*.tar.gz

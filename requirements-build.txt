@@ -1,0 +1,4 @@
+# Native standalone collector builds, separate from notebook dependencies.
+pyinstaller==6.18.0
+oci-cli==3.94.2
+pandas==2.2.3

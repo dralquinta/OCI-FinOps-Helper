@@ -6,6 +6,10 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 
 import json
 import subprocess
+try:
+    from ..distribution import run_oci
+except ImportError:  # Direct src/collector.py execution
+    from distribution import run_oci
 from pathlib import Path
 from datetime import datetime
 from .progress import ProgressSpinner
@@ -51,7 +55,7 @@ class OCIRecommendationsFetcher:
         
         try:
             # Execute OCI CLI command (reliable API access method)
-            result = subprocess.run(
+            result = run_oci(
                 [
                     'oci', 'optimizer', 'recommendation-summary', 'list',
                     '--compartment-id', self.tenancy_ocid,
@@ -143,7 +147,7 @@ class OCIRecommendationsFetcher:
             'configured_currency': self.currency,
         })
         try:
-            result = subprocess.run(
+            result = run_oci(
                 ['oci', 'optimizer', 'resource-action-summary', 'list',
                  '--compartment-id', self.tenancy_ocid,
                  '--compartment-id-in-subtree', 'true',
