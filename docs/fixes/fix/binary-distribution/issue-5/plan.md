@@ -1,6 +1,6 @@
 # Issue 5: Standalone collection binary
 
-Approved request: fix #5 independently from #8 and #9, coordinated by tracking issue #10. Base: develop. Branch: fix/binary-distribution. Tracking PR: pending.
+Approved request: fix #5 independently from #8 and #9, coordinated by tracking issue #10. Base: develop. Branch: fix/binary-distribution. Tracking PR: https://github.com/dralquinta/OCI-FinOps-Helper/pull/11.
 
 ## Acceptance criteria
 - Root `build.sh` builds a standalone Linux x86_64 `dist/oci-finops-helper` embedding Python, collector, OCI CLI, notebooks, documentation and license.
