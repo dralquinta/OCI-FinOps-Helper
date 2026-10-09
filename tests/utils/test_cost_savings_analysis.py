@@ -124,7 +124,7 @@ class CostSavingsAnalysisTests(unittest.TestCase):
             evidence = load_evidence(root)
             report = analyze(*evidence)
             paths = export_reports(report, root / 'reports')
-            self.assertEqual(set(paths), {'markdown', 'html', 'csv', 'resources_csv', 'compartments_csv'})
+            self.assertEqual(set(paths), {'markdown', 'html', 'csv', 'resources_csv', 'compartments_csv', 'runbook_html'})
             md = paths['markdown'].read_text()
             self.assertIn('Executive', md)
             self.assertIn('USD', md)
@@ -181,7 +181,7 @@ class CostSavingsAnalysisTests(unittest.TestCase):
         report = analyze(self.costs(), None, evidence)
         with tempfile.TemporaryDirectory() as folder:
             paths = export_reports(report, folder)
-            markup = paths['html'].read_text()
+            markup = paths['runbook_html'].read_text()
             self.assertIn('&lt;script&gt;inert&lt;/script&gt;', markup)
             self.assertNotIn('<script>', markup)
             self.assertIn('Summary explanation', markup)
@@ -221,6 +221,22 @@ class CostSavingsAnalysisTests(unittest.TestCase):
         self.assertEqual(by_id['error-string']['status'], 'ESTIMATE_ERROR')
         self.assertEqual(sum('calculation error' in warning for warning in report['warnings']), 2)
 
+    def test_large_backlog_has_compact_executive_and_complete_runbook(self):
+        actions = [{'id': f'action-{i:03}', 'resource-id': f'volume-{i:03}', 'status': 'PENDING',
+                    'estimated-cost-saving': i + 1, 'metadata': {'detail': 'x' * 1000}}
+                   for i in range(100)]
+        report = analyze({'call1': {'items': []}}, None, {'resource_actions': actions})
+        with tempfile.TemporaryDirectory() as folder:
+            paths = export_reports(report, folder)
+            executive = paths['html'].read_text()
+            self.assertLess(len(executive), 40000)
+            self.assertNotIn('volume-000', executive)
+            self.assertIn('volume-099', executive)
+            self.assertIn('cost_savings_runbook.html', executive)
+            for action in actions:
+                self.assertIn(action['resource-id'], paths['runbook_html'].read_text())
+            self.assertIn('x' * 1000, paths['runbook_html'].read_text())
+
     def test_notebook_executes_from_root_and_notebook_directory(self):
         notebook = Path(__file__).resolve().parents[2] / 'jupe-note/cost_savings_analysis.ipynb'
         document = json.loads(notebook.read_text())
@@ -235,11 +251,15 @@ class CostSavingsAnalysisTests(unittest.TestCase):
                         (root / 'finops_collection.json').write_text(json.dumps(self.finops()))
                         (root / 'recommendations.json').write_text(json.dumps(self.advisor()))
                     os.chdir(cwd)
-                    namespace = {'EVIDENCE_DIR': root, 'REPORT_DIR': root / 'reports'}
-                    with contextlib.redirect_stdout(io.StringIO()):
+                    namespace = {'EVIDENCE_DIR': root, 'REPORT_DIR': root / 'reports',
+                                 'ACTION_RESOURCE_ID': 'volume-1' if cwd == notebook.parent.parent else None}
+                    captured = io.StringIO()
+                    with contextlib.redirect_stdout(captured):
                         for cell in document['cells']:
                             if cell['cell_type'] == 'code':
                                 exec(compile(''.join(cell['source']), str(notebook), 'exec'), namespace)
                     self.assertTrue((root / 'reports/cost_savings_executive.md').exists())
+                    if namespace['ACTION_RESOURCE_ID']:
+                        self.assertIn('provider_evidence:', captured.getvalue())
         finally:
             os.chdir(previous)

@@ -214,7 +214,9 @@ def analyze(raw, finops=None, advisor=None):
         add('Advisor', item)
     for item in (advisor or {}).get('items', []):
         add('Advisor summary', item)
-    actions.sort(key=lambda a: (a['estimated_monthly_savings_usd'] or 0), reverse=True)
+    actions.sort(key=lambda a: (0 if a['source'] == 'Advisor' and a['status'] == 'PENDING' else
+                               1 if a['source'] == 'FinOps' else 2,
+                               -(a['estimated_monthly_savings_usd'] or 0)))
     # Select only one pending estimate per identified resource. Missing identities cannot be summed.
     estimates = {}
     for action in actions:
@@ -261,7 +263,7 @@ def export_reports(report, directory):
     for action in report['actions']:
         counts[action['action'], action['status']] += 1
     lines += [f'- {action} / {status}: {count} review actions' for (action, status), count in sorted(counts.items())]
-    lines += ['', '## Unknowns and collection gaps', ''] + [f'- {warning}' for warning in report['warnings']]
+    lines += ['', '## Unknowns and collection gaps', '', f"{len(report['warnings'])} evidence gaps; first 10 shown. Complete warnings are retained in the detailed runbook."] + [f'- {warning}' for warning in report['warnings'][:10]]
     lines += ['', '## Approval and prioritization checklist', '',
               '- [ ] Assign a resource owner and validate current evidence.',
               '- [ ] Prioritize positive pending Advisor estimates; then investigate high spend within each currency.',
@@ -275,18 +277,16 @@ def export_reports(report, directory):
               '- Storage performance/tiering: collect VPU configuration, throughput/IOPS, access ages, retrieval and minimum-retention charges, backups and lifecycle policies; benchmark before changing tiers.',
               '- Scheduling: obtain workload calendars, timezone, dependency startup order, exclusions and application restart tests; verify shape-specific stop billing.',
               '- Networking/other services: inspect SKU charges, transfer destinations, gateways, load balancers and retention with owners; collect service-specific metrics before proposing reductions.',
-              '', '## Per-resource execution appendix', '']
-    for index, action in enumerate(report['actions'], 1):
-        lines += [f'### Review action {index}', '']
-        for key, value in action.items():
-            lines.append(f'- {key}: {json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else value}')
-        lines.append('')
+              '', '## Top 20 action reviews', '',
+              '[Complete execution runbook](cost_savings_runbook.html) | [Full action tracker CSV](cost_savings_actions.csv)', '']
+    for action in report['actions'][:20]:
+        lines.append(f"- {action['resource_id']} / {action['region']} / {action['compartment_id']} / {action['action']} / {action['status']} / estimate {action['estimated_monthly_savings_usd']} USD/month / recommendation {action['recommendation_id']}")
     if not report['actions']:
         lines.append('No evidence-backed actions available. Collect FinOps and Advisor evidence; spend alone does not establish safe savings.')
     content = '\n'.join(lines) + '\n'
     paths = {'markdown': directory / 'cost_savings_executive.md', 'html': directory / 'cost_savings_executive.html',
              'csv': directory / 'cost_savings_actions.csv', 'resources_csv': directory / 'cost_savings_resources.csv',
-             'compartments_csv': directory / 'cost_savings_compartments.csv'}
+             'compartments_csv': directory / 'cost_savings_compartments.csv', 'runbook_html': directory / 'cost_savings_runbook.html'}
     paths['markdown'].write_text(content, encoding='utf-8')
     def escape(value):
         return html.escape(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value))
@@ -309,22 +309,32 @@ def export_reports(report, directory):
             table(top(report['compartments']), [('compartment_path', 'Compartment'), ('currency', 'Currency'), ('observed_cost', 'Observed spend')]),
             '<h2>Action and status summary</h2>',
             table([{'action': action, 'status': status, 'count': count} for (action, status), count in sorted(counts.items())], [('action', 'Action'), ('status', 'Status'), ('count', 'Review count')]),
-            '<h2>Unknowns and collection gaps</h2><ul>' + ''.join(f'<li>{escape(warning)}</li>' for warning in report['warnings']) + '</ul>',
+            f'<h2>Unknowns and collection gaps</h2><p>{len(report["warnings"])} gaps; first 10 shown. Full warnings in the detailed runbook.</p><ul>' + ''.join(f'<li>{escape(warning)}</li>' for warning in report['warnings'][:10]) + '</ul>',
             '<h2>Approval and evidence checklist</h2><ul>']
-    checklist = content.split('## Approval and prioritization checklist\n', 1)[1].split('## Per-resource execution appendix', 1)[0]
+    checklist = content.split('## Approval and prioritization checklist\n', 1)[1].split('## Top 20 action reviews', 1)[0]
     for line in checklist.splitlines():
         if line.startswith('- '):
             page.append(f'<li>{escape(line[2:])}</li>')
         elif line.startswith('## '):
             page.append(f'</ul><h3>{escape(line[3:])}</h3><ul>')
-    page += ['</ul><h2>Per-resource execution appendix</h2><p><a href="cost_savings_actions.csv">Complete action backlog CSV</a></p>']
-    for index, action in enumerate(report['actions'], 1):
-        page += [f'<h3>Review {index}: {escape(action["resource_id"])} / {escape(action["action"])}</h3>',
-                 table([{'field': key, 'detail': value} for key, value in action.items()], [('field', 'Field'), ('detail', 'Evidence / execution detail')])]
+    page += ['</ul><h2>Top 20 action reviews</h2><p><a href="cost_savings_runbook.html">Full execution runbook</a> | <a href="cost_savings_actions.csv">Complete action tracker CSV</a></p>',
+             table(report['actions'][:20], [('source', 'Source'), ('resource_id', 'Resource'), ('resource_name', 'Name'), ('region', 'Region'),
+                                          ('compartment_id', 'Compartment'), ('action', 'Action'), ('status', 'Status'),
+                                          ('estimated_monthly_savings_usd', 'Estimated USD/month')])]
     if not report['actions']:
         page.append('<p>No evidence-backed actions available. Collect FinOps and Advisor evidence; spend alone does not establish safe savings.</p>')
     page.append('</body></html>')
     paths['html'].write_text('\n'.join(page), encoding='utf-8')
+    runbook = page[:2] + ['<h1>Complete cost savings execution runbook</h1>', f'<p>Prepared at: {escape(prepared)} (UTC)</p>',
+                          '<p>Review templates only; no actions executed. Estimates are not verified savings. Preserve owner approval and recovery evidence before any change.</p>',
+                          '<h2>Complete collection warnings</h2><ul>' + ''.join(f'<li>{escape(warning)}</li>' for warning in report['warnings']) + '</ul>']
+    for index, action in enumerate(report['actions'], 1):
+        runbook += [f'<h3>Review {index}: {escape(action["resource_id"])} / {escape(action["action"])}</h3>',
+                    table([{'field': key, 'detail': value} for key, value in action.items()], [('field', 'Field'), ('detail', 'Evidence / execution detail')])]
+    if not report['actions']:
+        runbook.append('<p>No evidence-backed actions available.</p>')
+    runbook.append('</body></html>')
+    paths['runbook_html'].write_text('\n'.join(runbook), encoding='utf-8')
     fields = list(report['actions'][0]) if report['actions'] else ['source', 'resource_id', 'region', 'action', 'status', 'observed_costs', 'estimated_monthly_savings_usd']
     fields += ['owner', 'approval_date', 'execution_date', 'baseline_period', 'comparison_period',
                'verified_savings', 'verified_currency', 'verification_evidence', 'outcome_notes']

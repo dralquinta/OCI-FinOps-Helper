@@ -38,3 +38,5 @@ Expose complete resource and compartment spend summaries, retaining Unknown iden
 Show readable HTML headings/tables and top 10 spend drivers per currency in the executive main section. Preserve every spend-driver row in linked resource/compartment CSV appendices and full action details in the execution appendix/action CSV. Add UTC preparation timestamp.
 
 Outcome tracking: add blank editable action CSV fields for owner, approval/execution dates, baseline/comparison periods, verified savings/currency/evidence and outcome notes. Notebook documents later updates without claiming savings before verification.
+
+Real-data readability refinement: compact executive top-20 action reviews and sampled collection gaps; sixth export is a complete separate execution-runbook HTML. No provider detail is lost. Notebook defaults to shortlists with exact resource-ID filtering for full action inspection.

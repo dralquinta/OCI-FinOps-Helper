@@ -58,3 +58,12 @@ Final targeted: 14 passed. Final full regression: 46 passed. Both standard valid
 ## Final independent coordinator verification
 
 Coordinator independently ran all 14 focused tests and diff whitespace check: passed. Local supplied evidence successfully produced all five report files covering 3,410 deduplicated review entries and 18,055 resource-spend rows; 1,657 pending resource entries retain nonzero eligible estimates. The earlier structured-action export failure and string-boolean exclusion bug were reproduced and corrected with synthetic regression fixtures. Customer evidence and generated reports remain untracked. No OCI calls or infrastructure changes occurred.
+
+## Red/Green: bound executive size, preserve the complete runbook
+Real-evidence review showed that placing thousands of full provider blobs/runbooks inside the executive briefing made it unusable. Added a synthetic 100-action test first; initial executive HTML was 540,735 characters, failing the bounded-size assertion. Limited executive action detail to the top 20 identity/location/action/status/estimate reviews and sampled 10 collection warnings, linking a separate complete HTML execution runbook. Full provider evidence/runbooks/warnings and all resource/compartment/action CSV rows remain retained; six artifacts are exported. Notebook defaults to shortlists and supports exact resource-ID filtering to inspect full detail. Sequential execution tests cover that filter and default shortlist.
+
+Final targeted: 15 passed. Final full regression: 47 passed. Commands are the standard targeted analysis and full unittest discovery commands.
+
+## Independent real-input executive-readability verification
+
+Coordinator independently passed all 15 focused tests and diff whitespace check. Real-input exports retain 3,410 review entries and 18,055 resource-spend rows in six artifacts, while the executive HTML is 16,370 bytes and Markdown 14,166 bytes. Complete evidence remains in the linked detailed runbook and CSV appendices. Generated final reports use a fresh output subdirectory, preserving prior exports and potential outcome edits.

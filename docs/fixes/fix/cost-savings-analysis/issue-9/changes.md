@@ -12,8 +12,8 @@ Executive Markdown/HTML/CSV exports include service/currency and action/status s
 Implementation prepared on the isolated issue-specific branch. The existing user-modified notebook and foreground worktree remain untouched. No infrastructure actions were performed.
 
 ## Validation
-- Targeted: `python3 -m unittest tests.utils.test_cost_savings_analysis -v`: 14 passed.
-- Full regression: `python3 -m unittest discover -s tests -v`: 46 passed.
+- Targeted: `python3 -m unittest tests.utils.test_cost_savings_analysis -v`: 15 passed.
+- Full regression: `python3 -m unittest discover -s tests -v`: 47 passed.
 - Sequential synthetic notebook execution: repository root, notebook directory, full optional evidence and empty input passed.
 - TDD first observed missing-module Red, then two additional audit-driven missing-field failures before fixes.
 - Independent coordinator review pending. No implementation commit or push performed yet.
@@ -29,3 +29,5 @@ Real OCI Advisor compatibility: normalize dictionary-valued action types while p
 Explicit OCI boolean/string flag normalization preserves valid estimates when metadata contains `false`, excludes explicitly invalidated `true` entries, and retains genuine error descriptions.
 
 Independent coordinator validation passed all 14 focused tests and real-input report generation. Five report artifacts were generated locally; no customer inputs/results are committed. Collection gaps remain explicit, including unavailable FinOps evidence.
+
+Executive reports remain compact with top 20 action summaries, top spend tables and sampled coverage gaps; the linked complete execution-runbook HTML and full CSV appendices preserve every detail. Notebook resource filtering and shortlists prevent thousands of actions from overwhelming walkthrough output.
