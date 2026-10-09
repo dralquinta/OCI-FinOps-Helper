@@ -1,7 +1,7 @@
 # Issue 8: Collection performance
 
 Tracking coordinator: #10. Branch: `fix/collection-performance`. Base: `develop`.
-Tracking PR: pending remote draft creation.
+Tracking PR: https://github.com/dralquinta/OCI-FinOps-Helper/pull/12 remote draft creation.
 
 ## Approved scope and rationale
 
