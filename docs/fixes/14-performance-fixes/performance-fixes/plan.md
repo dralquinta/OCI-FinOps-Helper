@@ -67,3 +67,11 @@ User reports no on-screen feedback from the committed binary. Existing authoriza
 Source files: src/collector.py, src/utils/api_executor.py, src/utils/feedback.py, src/distribution.py. Tests: tests/test_streaming_progress.py, tests/test_distribution.py, scripts/smoke_binary.py and tests/test_packaging.py. Red step: successful streaming requests currently emit no startup/page status or flushed waiting heartbeat.
 
 Progress follow-up verification is complete: 156 tests in both Python environments, old executable feedback Red and rebuilt executable feedback Green, full executable smoke and 100k memory/cardinality guard. Install the updated artifact as dist/oci-finops-helper-progress while preserving the active canonical executable: PyInstaller reopens its embedded PYZ archive during imports, making replacement during a run unsafe. Source build output retains the canonical name for subsequent builds. Next: commit/push and return PR to ready for review.
+
+## Follow-up: empty regional inventory responses
+
+User reported repeated JSON decoding errors for compute and block-volume list commands. Diagnose successful empty OCI CLI output and worker capture, then preserve empty inventories without concealing malformed or failed responses. Existing implementation and remote PR remain the tracking baseline.
+
+Ownership: performance owns src/utils/growth_collector.py and tests/utils/test_growth_collector.py; auditor independently verifies OCI CLI and worker capture and owns tests/test_oci_worker.py if necessary; root owns integration and TDD docs. No overlapping edits. First Red: successful empty inventory list response must produce an empty list without JSON-decoding errors. Validation: targeted growth/worker/FinOps suites, full unittest regression, frozen executable smoke.
+
+Follow-up completed: all three agents finished their assigned slices; successful empty list normalization verified by Red/Green tests, real CLI rendering, worker capture, four bounded live inventory requests, 159-test suites in both interpreters, and rebuilt executable smoke. No worker change was required. Canonical local executable updated safely after the reported process exited.

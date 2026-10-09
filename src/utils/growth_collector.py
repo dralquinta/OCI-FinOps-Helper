@@ -75,6 +75,12 @@ class OCIGrowthCollector:
                 print(f"❌ Command failed: {result.stderr[:200]}")
                 return None
             
+            # OCI CLI renders successful empty list responses as no output.
+            # Restrict this normalization to list actions; failed commands and
+            # missing payloads from get/raw-request must remain failed evidence.
+            if command[:1] == ['oci'] and command[3:4] == ['list'] and not result.stdout.strip():
+                return []
+
             # Parse JSON response
             response = json.loads(result.stdout)
 

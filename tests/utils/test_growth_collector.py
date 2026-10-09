@@ -191,3 +191,81 @@ class MonitoringRetentionTests(unittest.TestCase):
         self.assertTrue(metric['samples_truncated'])
         self.assertIn('1000', result['sampling_note'])
         self.assertFalse(any(row['status'] == 'failed' for row in result['coverage']))
+
+
+class EmptyOCIListOutputTests(unittest.TestCase):
+    def test_successful_empty_cli_lists_are_empty_evidence_without_decode_errors(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            collector = OCIGrowthCollector('synthetic', 'home', directory)
+            for operation in ('compute instance list', 'bv volume list',
+                              'compute volume-attachment list', 'bv boot-volume list'):
+                for stdout in ('', ' \n\t'):
+                    with self.subTest(operation=operation, whitespace=bool(stdout)):
+                        output = io.StringIO()
+                        response = subprocess.CompletedProcess([], 0, stdout, '')
+                        with patch('src.utils.growth_collector.ProgressSpinner'), \
+                             patch('src.utils.growth_collector.run_oci', return_value=response), \
+                             contextlib.redirect_stdout(output):
+                            result = collector._execute_oci_command(['oci', *operation.split(), '--all', '--output', 'json'], 'Inventory')
+                        self.assertEqual([], result)
+                        self.assertNotIn('Failed to parse JSON', output.getvalue())
+
+    def test_auth_malformed_or_nonlist_empty_output_remains_failed_evidence(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            collector = OCIGrowthCollector('synthetic', 'home', directory)
+            cases = [(['oci', 'compute', 'instance', 'list'], 1, '', 'NotAuthenticated'),
+                     (['oci', 'compute', 'instance', 'list'], 0, 'not json', ''),
+                     (['oci', 'raw-request'], 0, '', ''),
+                     (['oci', 'compute', 'instance', 'get'], 0, '', '')]
+            for command, code, stdout, stderr in cases:
+                with self.subTest(command=command, code=code), \
+                     patch('src.utils.growth_collector.ProgressSpinner'), \
+                     patch('src.utils.growth_collector.run_oci', return_value=subprocess.CompletedProcess(command, code, stdout, stderr)), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertIsNone(collector._execute_oci_command(command, 'Inventory'))
+
+
+class EmptyListCoverageIntegrationTests(unittest.TestCase):
+    def test_growth_callback_records_empty_coverage_and_preserves_attachment_safety(self):
+        import json
+        import subprocess
+        import tempfile
+        from src.utils.finops_collector import OCIFinOpsCollector
+        for attachment_status in (0, 1):
+            with self.subTest(attachment_status=attachment_status), tempfile.TemporaryDirectory() as directory:
+                growth = OCIGrowthCollector('synthetic', 'home', directory)
+                def execute(command, **kwargs):
+                    operation = command[1:4]
+                    if operation == ['iam', 'region-subscription', 'list']:
+                        body = {'data': [{'region-name': 'home', 'status': 'READY'}]}
+                    elif operation == ['search', 'resource', 'structured-search']:
+                        body = {'data': {'items': []}}
+                    elif operation == ['iam', 'availability-domain', 'list']:
+                        body = {'data': [{'name': 'ad'}]}
+                    elif operation == ['bv', 'volume', 'list']:
+                        body = {'data': [{'id': 'volume', 'lifecycle-state': 'AVAILABLE'}]}
+                    elif operation == ['compute', 'volume-attachment', 'list']:
+                        return subprocess.CompletedProcess(command, attachment_status, '', 'NotAuthorized' if attachment_status else '')
+                    else:
+                        return subprocess.CompletedProcess(command, 0, '', '')
+                    return subprocess.CompletedProcess(command, 0, json.dumps(body), '')
+                with patch('src.utils.growth_collector.ProgressSpinner'), \
+                     patch('src.utils.growth_collector.run_oci', side_effect=execute), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    result = OCIFinOpsCollector('synthetic', 'home', directory, execute_command=growth._execute_oci_command).collect_all()
+                empty_operations = {row['operation'] for row in result['coverage'] if row['status'] == 'empty'}
+                self.assertIn('compute instance list', empty_operations)
+                self.assertIn('bv boot-volume list', empty_operations)
+                self.assertIn('compute boot-volume-attachment list', empty_operations)
+                failed = [row for row in result['coverage'] if row['status'] == 'failed']
+                if attachment_status:
+                    self.assertEqual(['compute volume-attachment list'], [row['operation'] for row in failed])
+                    self.assertEqual([], result['candidates'])
+                else:
+                    self.assertEqual([], failed)
+                    self.assertIn('compute volume-attachment list', empty_operations)
+                    self.assertEqual(['volume'], [row['resource_id'] for row in result['candidates']])

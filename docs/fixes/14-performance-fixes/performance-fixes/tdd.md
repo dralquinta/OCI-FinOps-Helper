@@ -156,3 +156,17 @@ Final progress follow-up full regression: 156 tests passed in 14.199s (system) a
 Rebuilt artifact: 141,257,448 bytes, with duplicate SDK source count still zero. The actual Popen pipe check observes startup feedback before process completion; all nine OCI services, worker reuse, archive/cache routing and isolated auth-failure checks pass. Collector, API, distribution, feedback helper and worker packaged source bytes match the checkout.
 
 Installed the verified artifact as dist/oci-finops-helper-progress. The active canonical binary is byte-for-byte unchanged. PyInstaller lazily reopens its executable-embedded PYZ archive, so replacing that pathname while the user run is active would be unsafe. The running process continues with its loaded version; next invocation can use the updated filename with the same arguments.
+
+## Follow-up: successful empty OCI list responses
+
+Red: tests.utils.test_growth_collector.EmptyOCIListOutputTests reproduced eight expected subtest failures (four user-reported inventory operations, empty and whitespace output). The old decoder returned None and printed JSON parse errors for successful empty lists. Authentication failures, malformed nonempty JSON, and empty non-list responses already remained failed evidence.
+
+Independent diagnosis: pinned OCI CLI renderer deliberately omits output for empty data. Twenty alternating empty/nonempty worker responses and sixteen parallel frozen help calls confirmed no worker capture loss. A bounded live root-compartment compute instance list in the approved tenancy independently returned OCI status zero, zero stdout bytes, and zero stderr bytes. No customer payloads recorded.
+
+Green: growth executor normalizes blank successful list output to an empty list after checking return status. Targeted growth/FinOps/streaming FinOps suites: 29 tests passed. Full regression and rebuilt executable validation pending.
+
+Integration: the growth callback supplies empty inventory coverage to FinOps without failed requests. Empty successful attachment lists permit recommendations; failed attachment lists preserve failed coverage and block orphan-volume candidates. Against the prior implementation, the added unit and integration regressions reproduced ten expected failures. Related suite: 30 tests passed.
+
+Refactor: no worker or unrelated collector changes; normalization remains confined to successful list operations. Full regression: `python3 -m unittest discover -s tests -v` and the pinned build interpreter both passed all 159 tests. Bounded live verification of all four reported operations passed: three empty inventories and one nonempty inventory, with no JSON parse errors. No exhaustive growth scan was repeated.
+
+Executable verification: rebuilt with pinned PyInstaller and passed `python3 scripts/smoke_binary.py <rebuilt-binary>`. Includes actual frozen empty/nonempty/empty signed inventory requests against a localhost fixture with synthetic credentials, startup feedback, nine CLI services, worker protocol, archive/cache safety, error exit status, and suite extraction without Python/OCI on PATH. Installed the verified executable at `dist/oci-finops-helper` after confirming no running collector used that path. Binary size: 141,258,424 bytes. Follow-up complete.

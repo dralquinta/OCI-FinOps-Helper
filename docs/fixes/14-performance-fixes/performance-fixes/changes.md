@@ -40,3 +40,19 @@ User-observed regression: collection starts silently because the streaming path 
 Validation: 156 tests pass in system and pinned Python, actual rebuilt executable feedback arrives before the process finishes, and all expanded executable checks pass. The 100k COST / 200k USAGE benchmark preserves cardinality and precision at 132.43 MiB collector RSS. Binary size is 141,257,448 bytes, retaining the earlier packaging reduction.
 
 The verified update is installed alongside the current executable as dist/oci-finops-helper-progress. The canonical executable is unchanged to protect the user run: PyInstaller lazily reads its embedded archive and must not have that pathname replaced while running. Future source builds retain the canonical output name.
+
+## Follow-up: regional inventory JSON errors
+
+### Root Cause Analysis
+OCI CLI suppresses stdout for successful list operations with no resources. The growth executor unconditionally decoded that empty string as JSON, printing a decoding failure for each empty compartment/region and classifying valid empty evidence as failed. Existing tests used JSON-encoded empty arrays and did not cover the actual CLI renderer. Worker output capture was verified independently.
+
+### How It Was Fixed
+Successful blank list responses become empty lists; return-code errors, malformed nonblank JSON, and empty non-list responses retain failure behavior.
+
+### Summary
+Empty regional inventories no longer flood the terminal with JSON parse errors.
+
+### Validation
+Red regression observed and targeted growth/FinOps suites passed (29 tests). Bounded live request independently confirmed successful empty CLI output. Full suite and rebuilt executable checks pending.
+
+Final follow-up validation: both system and pinned Python regression suites passed all 159 tests. Growth-to-FinOps integration preserves empty evidence and attachment-failure safety. Bounded live requests for all four reported operations completed without parse errors, including empty and nonempty results. Rebuilt standalone binary passed expanded offline smoke with signed localhost empty/nonempty/empty inventory requests and existing service/worker/archive/cache checks; installed at `dist/oci-finops-helper`. No exhaustive tenancy growth scan was repeated for this follow-up.
