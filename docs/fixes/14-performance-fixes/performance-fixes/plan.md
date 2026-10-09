@@ -75,3 +75,13 @@ User reported repeated JSON decoding errors for compute and block-volume list co
 Ownership: performance owns src/utils/growth_collector.py and tests/utils/test_growth_collector.py; auditor independently verifies OCI CLI and worker capture and owns tests/test_oci_worker.py if necessary; root owns integration and TDD docs. No overlapping edits. First Red: successful empty inventory list response must produce an empty list without JSON-decoding errors. Validation: targeted growth/worker/FinOps suites, full unittest regression, frozen executable smoke.
 
 Follow-up completed: all three agents finished their assigned slices; successful empty list normalization verified by Red/Green tests, real CLI rendering, worker capture, four bounded live inventory requests, 159-test suites in both interpreters, and rebuilt executable smoke. No worker change was required. Canonical local executable updated safely after the reported process exited.
+
+## Follow-up: compact billing progress UI
+
+Replace billing page/request logs with a compact live terminal status and periodic plain summaries for redirected output. Show completed/total daily windows, COST/USAGE record and page totals, elapsed time, active requests, retries, and truthful failed/interrupted completion. Retain visible retry/error notices and immediate flushed startup. Use bounded counters and active-window state without retaining page history; no new runtime dependency.
+
+Ownership: performance owns src/utils/feedback.py and tests/utils/test_billing_progress.py; auditor owns tests/test_streaming_progress.py and independent verification; root owns src/collector.py, src/utils/api_executor.py, integration and TDD docs. Existing tracking PR #15 reused. First Red: collecting many mocked pages must emit bounded aggregate output rather than one line per request/page. Validate TTY rendering, plain fallback, concurrency, failed/retry counters, full regression, and rebuilt binary smoke.
+
+Verification roster expanded: large_data_verifier owns tests/test_streaming_collection.py and scripts/smoke_binary.py for scale and actual PTY evidence; no overlap with renderer/integration ownership. All three agent source slices are now frozen. Final rebuild and system/pinned regression are running.
+
+Follow-up complete: source and executable verified, compact progress installed in the canonical local binary; all agent-owned slices integrated without conflicts. System/pinned suites each passed 166 tests. Actual PTY smoke verified the requested terminal UX.

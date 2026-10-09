@@ -4,6 +4,7 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 """
 
 import json
+from contextlib import nullcontext
 import time
 import subprocess
 try:
@@ -214,7 +215,7 @@ class OCIAPIExecutor:
             ) for query_type, group_by_fields, call_name, from_date, to_date in calls]
             return [future.result() for future in futures]
 
-    def collect_to_store(self, store, query_type, group_by_fields, partition, from_date, to_date):
+    def collect_to_store(self, store, query_type, group_by_fields, partition, from_date, to_date, progress=None):
         """Persist each bounded Usage page before requesting the next page."""
         request_file = self.output_dir / f'request_{query_type}_{partition}.json'
         body = {'tenantId': self.tenancy_ocid,
@@ -228,15 +229,19 @@ class OCIAPIExecutor:
         page_seq = 0
         retries = 0
         window_records = 0
+        success = False
+        label = f'Billing {query_type} {from_date} to {to_date}: collecting'
+        if progress is not None:
+            progress.window_started(query_type, from_date, to_date)
+        else:
+            report_progress(label)
         try:
             while True:
                 command = ['oci', 'raw-request', '--http-method', 'POST',
                            '--target-uri', self.api_endpoint + '?' + urlencode(query),
                            '--request-body', f'file://{request_file}',
                            '--region', self.home_region, '--output', 'json']
-                label = f'Billing {query_type} {from_date} to {to_date}: requesting page {page_seq + 1}'
-                report_progress(label)
-                with progress_heartbeat(label):
+                with progress_heartbeat(label) if progress is None else nullcontext():
                     result = run_oci(command, capture_output=True, text=True, timeout=300)
                 if result.returncode:
                     report_progress(f'{query_type} page failed for {partition}: {result.stderr[:200]}')
@@ -260,7 +265,10 @@ class OCIAPIExecutor:
                         except (TypeError, ValueError):
                             pass
                         retries += 1
-                        report_progress(f'{query_type} HTTP {status} for {partition}; retry {retries}/4')
+                        if progress is not None:
+                            progress.retry(query_type, from_date, status, retries, 4)
+                        else:
+                            report_progress(f'{query_type} HTTP {status} for {partition}; retry {retries}/4')
                         time.sleep(delay)
                         continue
                 if not isinstance(data, dict) or not isinstance(data.get('items'), list):
@@ -275,14 +283,16 @@ class OCIAPIExecutor:
                                metadata={key: value for key, value in data.items() if key != 'items'})
                 page_seq += 1
                 window_records += len(data['items'])
-                report_progress(f'Billing {query_type} {from_date}: page {page_seq} saved '
-                                f"({len(data['items'])} records; {window_records} records in window)")
+                if progress is not None:
+                    progress.page_saved(query_type, from_date, len(data['items']))
                 retries = 0
                 token = next((value for key, value in headers.items()
                               if key.lower() == 'opc-next-page'), None)
                 if not token:
-                    report_progress(f'Billing {query_type} {from_date}: window complete '
-                                    f'({page_seq} pages; {window_records} records)')
+                    success = True
+                    if progress is None:
+                        report_progress(f'Billing {query_type} {from_date}: window complete '
+                                        f'({page_seq} pages; {window_records} records)')
                     return True
                 if not isinstance(token, str) or token in seen_pages:
                     report_progress(f'Repeated or invalid {query_type} page token for {partition}')
@@ -293,4 +303,6 @@ class OCIAPIExecutor:
             report_progress(f'{query_type} collection failed for {partition}: {type(error).__name__}')
             return False
         finally:
+            if progress is not None:
+                progress.window_finished(query_type, from_date, success)
             request_file.unlink(missing_ok=True)

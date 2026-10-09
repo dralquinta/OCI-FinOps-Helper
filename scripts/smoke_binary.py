@@ -1,8 +1,10 @@
 """Offline validation of an actual binary with Python/OCI absent from PATH."""
 import json
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
+import pty
 import subprocess
 import sys
 import tarfile
@@ -147,6 +149,54 @@ def smoke_feedback(binary, environment, directory):
         process.stdout.close()
 
 
+def smoke_terminal_feedback(binary, environment, directory):
+    """The actual frozen parent must refresh one billing line on a real TTY."""
+    arguments = ['--tenancy-ocid', 'example-tenancy', '--home-region', 'us-ashburn-1',
+                 '--from', '2026-01-01', '--to', '2026-01-02', '--no-growth-collection',
+                 '--skip-usage', '--skip-enrichment', '--skip-recommendations',
+                 '--cache-dir', str(Path(directory) / 'terminal-feedback-cache')]
+    master, slave = pty.openpty()
+    process = None
+    output = b''
+    try:
+        process = subprocess.Popen([str(binary), *arguments], env=dict(environment, TERM='xterm'),
+                                   cwd=directory, stdin=subprocess.DEVNULL, stdout=slave,
+                                   stderr=slave, start_new_session=True)
+        os.close(slave)
+        slave = None
+        deadline = time.monotonic() + 120
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                assert remaining > 0, 'Terminal feedback probe exceeded deadline'
+                if not selector.select(remaining):
+                    raise AssertionError('Terminal feedback probe exceeded deadline')
+                try:
+                    chunk = os.read(master, 8192)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+                if not chunk:
+                    break
+                output = (output + chunk)[-65536:]
+        process.wait(timeout=5)
+        text = output.decode('utf-8', errors='replace')
+        assert '[status] Preparing collection' in text, 'Real terminal must receive startup status'
+        assert 'Billing' in text, 'Real terminal must receive billing status'
+        assert b'\x1b[2K' in output, 'Billing must clear and refresh a terminal line in place'
+        assert process.returncode != 0, 'Missing-config terminal probe must fail locally'
+        assert 'Collection failed; no success archive created.' in text
+    finally:
+        if process is not None and process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        os.close(master)
+        if slave is not None:
+            os.close(slave)
+
+
 def smoke(binary):
     binary = Path(binary).resolve()
     with tempfile.TemporaryDirectory(prefix='finops-binary-smoke-') as directory:
@@ -157,6 +207,8 @@ def smoke(binary):
         environment.update({'PATH': str(empty_path), 'HOME': str(directory), 'OCI_CLI_AUTH': 'api_key', 'OCI_CLI_CONFIG_FILE': str(directory / 'missing-config')})
         smoke_feedback(binary, environment, directory)
         print('PASS: startup feedback is flushed while collection is still running', flush=True)
+        smoke_terminal_feedback(binary, environment, directory)
+        print('PASS: real terminal receives startup and compact billing refresh without cloud access', flush=True)
         for arguments in offline_commands():
             result = subprocess.run([str(binary), *arguments], env=environment, cwd=directory, capture_output=True, text=True, timeout=120)
             if result.returncode:

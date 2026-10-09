@@ -259,17 +259,17 @@ class OCICostCollector:
         if __package__:
             from .utils.datasets import DiskDatasetStore
             from .utils.parallel import bounded_map
-            from .utils.feedback import report_progress, progress_heartbeat
+            from .utils.feedback import BillingProgress, report_progress, progress_heartbeat
         else:
             from utils.datasets import DiskDatasetStore
             from utils.parallel import bounded_map
-            from utils.feedback import report_progress, progress_heartbeat
+            from utils.feedback import BillingProgress, report_progress, progress_heartbeat
 
         report_progress('Starting OCI FinOps collection')
         report_progress(f'Date range: {self.from_date} inclusive to {self.to_date} exclusive; '
                         f'growth={"enabled" if growth_collection else "disabled"}')
         failed = False
-        report_progress('Preparing bounded billing workspace')
+        report_progress('Preparing billing collection')
         with DiskDatasetStore() as store:
             api = OCIAPIExecutor(self.tenancy_ocid, self.home_region, output_dir=self.output_dir)
             def jobs():
@@ -286,15 +286,14 @@ class OCICostCollector:
                     start = end
                     partition += 1
             def collect_page_window(job):
-                return api.collect_to_store(store, *job)
-            report_progress('Billing collection: starting COST/USAGE daily windows (up to 4 workers)')
-            with ThreadPoolExecutor(max_workers=4) as executor:
+                return api.collect_to_store(store, *job, progress=progress)
+            days = max(0, (date.fromisoformat(self.to_date) - date.fromisoformat(self.from_date)).days)
+            total_windows = days * (int(not skip_cost) + int(not skip_usage))
+            with BillingProgress(total_windows) as progress, ThreadPoolExecutor(max_workers=4) as executor:
                 for success in bounded_map(executor, collect_page_window, jobs(), 4):
                     failed = failed or not success
             cost = None if skip_cost else store.dataset('COST')
             usage = None if skip_usage else store.dataset('USAGE')
-            report_progress(f'Billing collection: finished ({cost.count if cost is not None else 0} COST records; '
-                            f'{usage.count if usage is not None else 0} USAGE records)')
             if not (skip_cost and skip_usage):
                 report_progress('Raw billing JSON: saving original records')
                 with progress_heartbeat('Raw billing JSON'):
@@ -341,7 +340,7 @@ class OCICostCollector:
                 if growth is not None:
                     enriched_fields = sorted(set(enriched_fields) | {'has_tags', 'tag_count', 'tag_namespaces',
                                              'primary_cost_center', 'primary_environment', 'tags'})
-                report_progress('CSV export: starting bounded merge and enrichment')
+                report_progress('CSV export: merging and enriching billing records')
                 with progress_heartbeat('CSV export'):
                     exported = 0
                     first = True

@@ -56,3 +56,19 @@ Empty regional inventories no longer flood the terminal with JSON parse errors.
 Red regression observed and targeted growth/FinOps suites passed (29 tests). Bounded live request independently confirmed successful empty CLI output. Full suite and rebuilt executable checks pending.
 
 Final follow-up validation: both system and pinned Python regression suites passed all 159 tests. Growth-to-FinOps integration preserves empty evidence and attachment-failure safety. Bounded live requests for all four reported operations completed without parse errors, including empty and nonempty results. Rebuilt standalone binary passed expanded offline smoke with signed localhost empty/nonempty/empty inventory requests and existing service/worker/archive/cache checks; installed at `dist/oci-finops-helper`. No exhaustive tenancy growth scan was repeated for this follow-up.
+
+## Follow-up: compact billing progress UI
+
+### Root Cause Analysis
+The initial feedback fix flushed every concurrent page request, saved page, and completed daily window. This made work visible but produced hundreds of log lines even for modest paginated collections and interleaved parallel activity. Prior tests required that verbose output rather than bounding it.
+
+### How It Was Fixed
+A shared billing progress reporter aggregates completed and failed windows, saved pages and records per query type, retries, active work, and elapsed time. Interactive terminals update in place at most once per second. Redirected output receives initial, periodic, and final plain summaries. Retry and error notices remain flushed immediately. Workers update only counters and current active-window state rather than retaining page history; no new runtime dependency is added.
+
+### Summary
+Billing progress stays readable during parallel collection, with truthful partial completion when requests fail.
+
+### Validation
+Initial Red observed 246 billing lines for 120 pages. Existing pagination/retry API tests pass after wiring changes (5 tests). Display and integration Green, full regression, and rebuilt executable checks pending.
+
+Final validation: all 166 tests passed under system and pinned Python, including scale, retry/partial totals, plain output, TTY width, redaction and concurrency. Rebuilt executable passed actual PTY refresh and full standalone smoke, then was installed safely at `dist/oci-finops-helper`. UI uses standard-library rendering and adds no runtime dependency.

@@ -24,23 +24,41 @@ def generated_rows(kind, count):
                 yield dict(row, platform='Linux', region='synthetic-region', skuPartNumber=sku)
 
 
-def add_generated_pages(store, kind, partition, count, page_size=1000):
+def add_generated_pages(store, kind, partition, count, page_size=1000, progress=None, started=None):
     page, sequence = [], 0
     for row in generated_rows(kind, count):
         page.append(row)
         if len(page) == page_size:
             store.add_page(kind, partition, sequence, page)
+            if progress is not None:
+                progress.page_saved(kind, started, len(page))
             sequence += 1
             page = []
     if page:
         store.add_page(kind, partition, sequence, page)
+        if progress is not None:
+            progress.page_saved(kind, started, len(page))
     return True
+
+
+def fixture_window(progress, kind, start, end, write):
+    success = False
+    if progress is not None:
+        progress.window_started(kind, start, end)
+    try:
+        success = write()
+        return success
+    finally:
+        if progress is not None:
+            progress.window_finished(kind, start, success)
 
 
 def page_api(count):
     def fake(executor, store, kind=None, fields=None, partition=0, start=None, end=None, **kwargs):
         kind = kind or kwargs.get('query_type')
-        return add_generated_pages(store, kind, partition, count)
+        progress = kwargs.get('progress')
+        return fixture_window(progress, kind, start, end,
+            lambda: add_generated_pages(store, kind, partition, count, progress=progress, started=start))
     return fake
 
 
@@ -100,9 +118,11 @@ class StreamingCollectionTests(unittest.TestCase):
             self.assertEqual(raw['call1']['items'][0]['computedQuantity'], 1.234567)
 
     def test_partial_api_pages_are_exported_but_do_not_report_success(self):
-        def partial(executor, store, kind, fields, partition, start, end):
-            add_generated_pages(store, kind, partition, 17)
-            return kind != 'USAGE'
+        def partial(executor, store, kind, fields, partition, start, end, progress=None):
+            def write():
+                add_generated_pages(store, kind, partition, 17, progress=progress, started=start)
+                return kind != 'USAGE'
+            return fixture_window(progress, kind, start, end, write)
         with tempfile.TemporaryDirectory() as directory:
             collector = OCICostCollector('synthetic', 'synthetic', '2026-09-01',
                                          '2026-09-02', directory, streaming=True)
@@ -118,9 +138,10 @@ class StreamingCollectionTests(unittest.TestCase):
 
     def test_skip_cost_collects_only_usage_and_inventory_receives_no_cost_handle(self):
         seen = []
-        def usage_only(executor, store, kind, fields, partition, start, end):
+        def usage_only(executor, store, kind, fields, partition, start, end, progress=None):
             seen.append(kind)
-            return add_generated_pages(store, kind, partition, 13)
+            return fixture_window(progress, kind, start, end,
+                lambda: add_generated_pages(store, kind, partition, 13, progress=progress, started=start))
         with tempfile.TemporaryDirectory() as directory:
             collector = OCICostCollector('synthetic', 'synthetic', '2026-09-01',
                                          '2026-09-02', directory, streaming=True)
@@ -136,12 +157,16 @@ class StreamingCollectionTests(unittest.TestCase):
             self.assertFalse((Path(directory) / 'output_merged.csv').exists())
 
     def test_compute_metadata_is_fetched_in_bounded_batches_and_cache_reused(self):
-        def compute(executor, store, kind, fields, partition, start, end):
+        def compute(executor, store, kind, fields, partition, start, end, progress=None):
             rows = [{'resourceId': f'ocid1.instance.oc1.synthetic.{index}',
                      'timeUsageStarted': start, 'computedAmount': 1, 'currency': 'USD'}
                     for index in range(501)]
-            store.add_page(kind, partition, 0, rows)
-            return True
+            def write():
+                store.add_page(kind, partition, 0, rows)
+                if progress is not None:
+                    progress.page_saved(kind, start, len(rows))
+                return True
+            return fixture_window(progress, kind, start, end, write)
         def metadata(ids):
             self.assertLessEqual(len(ids), 200)
             return ({iid: {'shape': 'synthetic-shape', 'resourceName': iid} for iid in ids}, len(ids), 0)
@@ -164,11 +189,15 @@ class StreamingCollectionTests(unittest.TestCase):
 
     def test_daily_parallel_partitions_export_in_chronological_order(self):
         windows = []
-        def daily(executor, store, kind, fields, partition, start, end):
+        def daily(executor, store, kind, fields, partition, start, end, progress=None):
             windows.append((kind, start, end))
-            store.add_page(kind, partition, 0, [{'resourceId': 'synthetic-resource',
-                'timeUsageStarted': start, 'computedAmount': 1.01, 'currency': 'USD'}])
-            return True
+            def write():
+                store.add_page(kind, partition, 0, [{'resourceId': 'synthetic-resource',
+                    'timeUsageStarted': start, 'computedAmount': 1.01, 'currency': 'USD'}])
+                if progress is not None:
+                    progress.page_saved(kind, start, 1)
+                return True
+            return fixture_window(progress, kind, start, end, write)
         with tempfile.TemporaryDirectory() as directory:
             collector = OCICostCollector('synthetic', 'synthetic', '2026-09-01',
                                          '2026-09-13', directory, streaming=True)
@@ -184,3 +213,39 @@ class StreamingCollectionTests(unittest.TestCase):
             for kind in ('COST', 'USAGE'):
                 self.assertEqual(sorted((start, end) for query, start, end in windows if query == kind),
                                  [(f'2026-09-{day:02d}', f'2026-09-{day + 1:02d}') for day in range(1, 13)])
+
+    def test_many_billing_windows_use_compact_output_and_bounded_active_state(self):
+        peak_active = 0
+        progress_object = None
+        def pages(executor, store, kind, fields, partition, start, end, progress=None):
+            nonlocal peak_active, progress_object
+            self.assertIsNotNone(progress, 'collector must share billing progress across windows')
+            progress_object = progress
+            def write():
+                nonlocal peak_active
+                for sequence in range(20):
+                    store.add_page(kind, partition, sequence, [{
+                        'resourceId': f'synthetic-resource-{sequence}',
+                        'timeUsageStarted': start, 'computedAmount': 1.01, 'currency': 'USD'}])
+                    progress.page_saved(kind, start, 1)
+                    peak_active = max(peak_active, progress.snapshot()['active_count'])
+                return True
+            return fixture_window(progress, kind, start, end, write)
+        with tempfile.TemporaryDirectory() as directory:
+            collector = OCICostCollector('synthetic', 'synthetic', '2026-01-01',
+                                         '2026-03-02', directory, streaming=True)
+            output = io.StringIO()
+            with patch('src.utils.api_executor.OCIAPIExecutor.collect_to_store', new=pages), \
+                 contextlib.redirect_stdout(output):
+                self.assertTrue(collector.collect(skip_enrichment=True, skip_recommendations=True,
+                                                  growth_collection=False))
+            self.assertLess(len(output.getvalue().splitlines()), 20, 'per-page/window logging must stay compact')
+            self.assertLessEqual(peak_active, 4)
+            snapshot = progress_object.snapshot()
+            self.assertEqual(snapshot['active_count'], 0, 'completed scopes must not be retained')
+            self.assertEqual(snapshot['completed_windows'], 120)
+            self.assertEqual(snapshot['failed_windows'], 0)
+            self.assertEqual(snapshot['COST'], {'records': 1200, 'pages': 1200})
+            self.assertEqual(snapshot['USAGE'], {'records': 1200, 'pages': 1200})
+            with (Path(directory) / 'output_merged.csv').open() as handle:
+                self.assertEqual(sum(1 for _ in csv.DictReader(handle)), 1200)
