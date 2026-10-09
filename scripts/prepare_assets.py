@@ -27,7 +27,7 @@ def sanitize_notebook(notebook):
 
 
 def asset_sources(root):
-    return [root / name for name in ['README.md', 'LICENSE', 'collector.sh', 'requirements.txt']] + sorted((root / 'docs').glob('*.md')) + sorted((root / 'jupe-note').glob('*.ipynb'))
+    return [root / name for name in ['README.md', 'LICENSE', 'collector.sh', 'requirements.txt']] + sorted((root / 'docs').glob('*.md')) + sorted((root / 'jupe-note').glob('*.ipynb')) + sorted((root / 'src').rglob('*.py'))
 
 
 def prepare(root, destination):
@@ -38,6 +38,9 @@ def prepare(root, destination):
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.suffix == '.ipynb':
             target.write_text(json.dumps(sanitize_notebook(json.loads(source.read_text())), indent=1))
+        elif source.suffix == '.py':
+            # Production source must retain OCID type prefixes and parser semantics.
+            target.write_bytes(source.read_bytes())
         else:
             target.write_text(redact(source.read_text()))
     notices = ['# Bundled third-party dependencies', '',

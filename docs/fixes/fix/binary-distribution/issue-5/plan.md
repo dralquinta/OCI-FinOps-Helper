@@ -33,3 +33,6 @@ Owned files: src/distribution.py; src/binary_entrypoint.py; src/utils/api_execut
 
 ## Constraints
 Tokensave is unavailable in the tool surface; targeted source reads are used. No implementation edits until remote tracking draft PR exists. No SDD requested. First Red step is the targeted distribution test suite; expected missing-module failures initially, followed by behavior-specific tests.
+
+## Follow-up: extracted notebook source imports
+Root cross-PR audit found future issue-9 notebooks import production helpers from src/. Extend the suite asset allowlist to src/**/*.py with relative layout and verbatim semantics; continue excluding tests, bytecode, customer and generated output. Add one failing extraction/namespace-import test using actual source plus a synthetic future helper, run focused/full regression (16/48), refresh the binary incrementally and verify extracted source via actual binary smoke. Source helpers from the separate issue-9 branch are not copied or merged.

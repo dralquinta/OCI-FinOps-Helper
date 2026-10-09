@@ -177,3 +177,35 @@ class CacheSafetyTests(unittest.TestCase):
                 self.assertEqual(1, run_collection([], root / 'archives', lambda: None, cache_dir=root / 'cache'))
             self.assertEqual('private', (root / 'external').read_text())
             self.assertEqual([], list((root / 'archives').glob('*.tar.gz')))
+
+
+class SourceAssetTests(unittest.TestCase):
+    def test_extracted_suite_contains_source_and_future_notebook_helpers_verbatim(self):
+        import shutil
+        import subprocess
+        from scripts.prepare_assets import prepare
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'repository'
+            source.mkdir()
+            for name in ['README.md', 'LICENSE', 'collector.sh', 'requirements.txt']:
+                shutil.copyfile(repository / name, source / name)
+            shutil.copytree(repository / 'src', source / 'src', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+            helper = source / 'src/utils/future_notebook_helper.py'
+            helper.write_text('TYPE_PREFIX = "ocid1.instance."\n')
+            (source / 'src/ignore.pyc').write_bytes(b'not source')
+            (source / 'tests').mkdir()
+            (source / 'tests/private_test.py').write_text('excluded')
+            with patch('scripts.prepare_assets.metadata.distributions', return_value=[]):
+                prepare(source, root / 'embedded/suite')
+            with patch.object(sys, '_MEIPASS', str(root / 'embedded'), create=True):
+                extract_suite(root / 'extracted')
+            extracted = root / 'extracted'
+            self.assertTrue((extracted / 'src/collector.py').is_file())
+            self.assertTrue((extracted / 'src/distribution.py').is_file())
+            self.assertEqual(helper.read_bytes(), (extracted / 'src/utils/future_notebook_helper.py').read_bytes())
+            self.assertFalse((extracted / 'src/ignore.pyc').exists())
+            self.assertFalse((extracted / 'tests').exists())
+            result = subprocess.run([sys.executable, '-c', 'from src.utils.future_notebook_helper import TYPE_PREFIX; assert TYPE_PREFIX == "ocid1.instance."'], cwd=extracted, capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, result.returncode, result.stderr)

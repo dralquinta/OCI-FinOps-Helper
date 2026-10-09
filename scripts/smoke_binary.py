@@ -53,6 +53,9 @@ def smoke(binary):
         if result.returncode:
             raise RuntimeError(result.stderr + result.stdout)
         assert (extraction / 'LICENSE').is_file()
+        assert (extraction / 'src/collector.py').is_file()
+        assert (extraction / 'src/distribution.py').is_file()
+        assert (extraction / 'src/utils/recommendations.py').is_file()
         assert {'growth_trends_analysis.ipynb', 'finops_analysis.ipynb', 'exadata_analysis.ipynb'} <= {path.name for path in (extraction / 'jupe-note').glob('*.ipynb')}
         print('PASS: standalone help, embedded OCI CLI, collection tar.gz inspection, failure status and suite extraction; PATH has no Python/OCI.')
 
