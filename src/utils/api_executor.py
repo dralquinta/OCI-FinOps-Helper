@@ -5,6 +5,10 @@ Copyright (c) 2025 Oracle and/or its affiliates.
 
 import json
 import subprocess
+try:
+    from ..distribution import run_oci
+except ImportError:  # Direct src/collector.py execution
+    from distribution import run_oci
 import sys
 from pathlib import Path
 from urllib.parse import urlencode
@@ -69,7 +73,7 @@ class OCIAPIExecutor:
             seen_pages = set()
             first_data = None
             while True:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+                result = run_oci(command, capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     # Never pass incomplete costs to downstream savings reports.
                     print(f"❌ API page failed: {result.stderr[:300]}")

@@ -4,6 +4,10 @@ import csv
 import json
 import math
 import subprocess
+try:
+    from ..distribution import run_oci
+except ImportError:  # Direct src/collector.py execution
+    from distribution import run_oci
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +24,7 @@ class OCIFinOpsCollector:
 
     @staticmethod
     def _execute(command, description):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        result = run_oci(command, capture_output=True, text=True, timeout=300)
         if result.returncode:
             return None
         response = json.loads(result.stdout)
