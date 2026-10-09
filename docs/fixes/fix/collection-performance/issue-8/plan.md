@@ -23,6 +23,8 @@ Overlap independent COST/USAGE queries with at most two workers, preserve comple
 - Other issue agents: isolated branches; no shared worktree edits.
 - issue8 owns `src/collector.py`, `src/utils/api_executor.py`, `src/utils/executor.py`, `tests/test_collector.py`, `tests/utils/test_api_executor.py`, new `tests/utils/test_executor.py`, and this documentation directory.
 - Conflicts: none.
+- Benchmark evidence file `benchmark.py` in this directory is also owned by issue8.
+- `README.md` is owned by issue8 for concurrent query, monetary preservation, and cache/snapshot usage documentation.
 
 ## Planned tests and validation
 
@@ -36,3 +38,7 @@ Overlap independent COST/USAGE queries with at most two workers, preserve comple
 ## Acceptance criteria
 
 Independent API work overlaps without losing pagination results. Every COST row appears once and monetary totals remain unchanged. Enrichment preserves supplied values, avoids row-wise processing, and can be skipped. Fresh successful metadata is reused; expired, missing, failed, or corrupt entries safely trigger lookups. Targeted and full suites pass; benchmark evidence is recorded.
+
+## Implementation status
+
+Source and behavior tests complete; 22 targeted and 45 full regression tests pass. Benchmark completed with exact COST rows/totals, identical enrichment results, and zero warm-cache fetches. Root independent focused tests and diff check passed; documentation was corrected per audit. PR #12 is the remote tracking gate. Ready for final audit and commit authorization.
