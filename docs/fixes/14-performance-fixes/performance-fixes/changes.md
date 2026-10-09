@@ -72,3 +72,19 @@ Billing progress stays readable during parallel collection, with truthful partia
 Initial Red observed 246 billing lines for 120 pages. Existing pagination/retry API tests pass after wiring changes (5 tests). Display and integration Green, full regression, and rebuilt executable checks pending.
 
 Final validation: all 166 tests passed under system and pinned Python, including scale, retry/partial totals, plain output, TTY width, redaction and concurrency. Rebuilt executable passed actual PTY refresh and full standalone smoke, then was installed safely at `dist/oci-finops-helper`. UI uses standard-library rendering and adds no runtime dependency.
+
+## Follow-up: colored terminal progress bar
+
+### Root Cause Analysis
+The compact billing status showed counters but lacked a visual completion indicator and outcome colors. Add lightweight terminal rendering while retaining readable plain logs and existing bounded state.
+
+### How It Was Fixed
+Real terminals receive a width-aware ASCII bar and finished-window percentage, cyan activity, green success, amber retry/partial/interrupted status and red failures. ANSI color segments are applied only after clipping visible text, each with a reset; NO_COLOR disables color while preserving the bar. Redirected logs and TERM=dumb stay plain. A final bar remains visible above the precise summary.
+
+### Summary
+Billing progress has a visual bar and color without an added dependency or page-history allocation. Successful and failed counts remain distinct even when all windows have finished.
+
+### Validation
+Missing colored bar and erased-final-bar regressions observed Red then Green. Seven renderer tests and independent real-PTY width/color/state checks passed. Full suites and rebuilt executable checks pending.
+
+Final validation: all 169 tests passed in both Python environments. Rebuilt executable passed real-PTY progress bar/percentage/color checks and full standalone offline smoke; safely installed at `dist/oci-finops-helper`. Color rendering adds no dependency.

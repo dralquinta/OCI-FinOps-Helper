@@ -71,7 +71,7 @@ class BillingProgress:
         self._stop = threading.Event()
         self._thread = None
         self._stream = None
-        self._tty = self._line_visible = False
+        self._tty = self._line_visible = self._colors = False
         self._started = self._last_output = 0
 
     def __enter__(self):
@@ -81,10 +81,11 @@ class BillingProgress:
                 raise RuntimeError('Billing progress is already active')
             self._stream = sys.stdout
             self._tty = bool(getattr(self._stream, 'isatty', lambda: False)()) and os.environ.get('TERM') != 'dumb'
+            self._colors = self._tty and 'NO_COLOR' not in os.environ
             self._started = time.monotonic()
             _active_billing = self
             if self._tty:
-                print(f'Billing collection started: {self.total_windows} daily windows', file=self._stream, flush=True)
+                print(self._paint(f'Billing collection started: {self.total_windows} daily windows', 36), file=self._stream, flush=True)
             self._emit(force=True, state='started')
         self._thread = threading.Thread(target=self._pulse, daemon=True)
         self._thread.start()
@@ -120,29 +121,67 @@ class BillingProgress:
             self._stream.flush()
             self._line_visible = False
 
+    def _paint(self, text, color):
+        return f'\x1b[{color}m{text}\x1b[0m' if self._colors and text else text
+
+    def _status_segments(self, state, width):
+        finished = self._completed + self._failed
+        ratio = min(1, finished / self.total_windows) if self.total_windows else 1
+        percentage = int(100 * ratio)
+        bar_size = 8 if width >= 70 and not self._failed else 4
+        filled = int(bar_size * ratio)
+        bar = '[' + '#' * filled + '-' * (bar_size - filled) + ']'
+        color = (32 if state == 'complete' else 33 if state in ('partial', 'interrupted')
+                 else 31 if state == 'failed' or self._failed else 32 if ratio == 1 else 36)
+        cost, usage = self._totals['COST']['records'], self._totals['USAGE']['records']
+        records = f'COST {self._compact_number(cost)} USAGE {self._compact_number(usage)} records'
+        prefix = f'Billing {bar} {percentage}% | '
+        activity = f'active {len(self._active)}'
+        failure = f' failed {self._failed}' if self._failed else ''
+        retry = f'retry {self._retries}'
+        elapsed = self._elapsed()
+        def compact(value):
+            return f'{value / 1000000:.1f}m' if value >= 1000000 else f'{value / 1000:.1f}k' if value >= 1000 else str(value)
+        if len(prefix + records + activity + failure + retry + elapsed) + 9 > width:
+            records = f'COST {compact(cost)} USAGE {compact(usage)} records'
+            prefix = f'{bar} {percentage}% | '
+        if width < 65:
+            records = f'C {compact(cost)} U {compact(usage)} records'
+            activity = f'a{len(self._active)}'
+            retry = f'r{self._retries}'
+        if width < 55:
+            records = ''
+            activity = ''
+        segments = [(prefix, color)]
+        if records:
+            segments.append((records + ' | ', 36))
+        if activity:
+            segments.append((activity, 36))
+        if failure:
+            segments.append((failure, 31))
+        segments.extend([(' | ' + retry, 33 if self._retries else 36), (' | ' + elapsed, 36)])
+        if width >= 100 and self._active:
+            _, start = next(iter(self._active))
+            segments.append((f' | {start}', 36))
+        return segments
+
     def _emit(self, force=False, state='working'):
         now = time.monotonic()
         interval = self.refresh_interval if self._tty else self.summary_interval
         if not force and now - self._last_output < interval:
             return
         if self._tty:
-            cost, usage = self._totals['COST'], self._totals['USAGE']
-            text = (f'Billing {self._completed}/{self.total_windows} | records '
-                    f'COST {self._compact_number(cost["records"])} '
-                    f'USAGE {self._compact_number(usage["records"])} | '
-                    f'active {len(self._active)} | retry {self._retries} | {self._elapsed()}')
             width = shutil.get_terminal_size(fallback=(80, 24)).columns
-            if len(text) >= width:
-                for kind, values in (('COST', cost), ('USAGE', usage)):
-                    records = values['records']
-                    if records >= 1000:
-                        compact = f'{records / 1000000:.1f}m' if records >= 1000000 else f'{records / 1000:.1f}k'
-                        text = text.replace(f'{kind} {self._compact_number(records)}', f'{kind} {compact}')
-            if width >= 100 and self._active:
-                _, start = next(iter(self._active))
-                text += f' | {start}'
-            # Keep status on one physical terminal line even on narrow screens.
-            self._stream.write('\r\x1b[2K' + _safe_text(text)[:max(1, width - 1)])
+            remaining = max(0, width - 1)
+            rendered = []
+            # Clip plain text before applying SGR so ANSI sequences stay intact.
+            for text, color in self._status_segments(state, width):
+                plain = _safe_text(text)[:remaining]
+                rendered.append(self._paint(plain, color))
+                remaining -= len(plain)
+                if not remaining:
+                    break
+            self._stream.write('\r\x1b[2K' + ''.join(rendered))
             self._stream.flush()
             self._line_visible = True
         else:
@@ -194,12 +233,16 @@ class BillingProgress:
         if self._thread is not None:
             self._thread.join()
         with _output_lock:
-            self._clear_line()
             self._active.clear()
             if exc_type is not None:
                 state = 'interrupted' if issubclass(exc_type, (KeyboardInterrupt, SystemExit)) else 'failed'
             else:
                 state = 'partial' if self._failed or self._completed != self.total_windows else 'complete'
-            print(self._summary(state), file=self._stream, flush=True)
+            if self._tty:
+                self._emit(force=True, state=state)
+                self._stream.write('\n')
+                self._line_visible = False
+            color = 32 if state == 'complete' else 31 if state == 'failed' else 33
+            print(self._paint(self._summary(state), color), file=self._stream, flush=True)
             if _active_billing is self:
                 _active_billing = None

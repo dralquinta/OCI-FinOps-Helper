@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import pty
+import re
 import subprocess
 import sys
 import tarfile
@@ -159,7 +160,9 @@ def smoke_terminal_feedback(binary, environment, directory):
     process = None
     output = b''
     try:
-        process = subprocess.Popen([str(binary), *arguments], env=dict(environment, TERM='xterm'),
+        terminal_environment = dict(environment, TERM='xterm')
+        terminal_environment.pop('NO_COLOR', None)
+        process = subprocess.Popen([str(binary), *arguments], env=terminal_environment,
                                    cwd=directory, stdin=subprocess.DEVNULL, stdout=slave,
                                    stderr=slave, start_new_session=True)
         os.close(slave)
@@ -186,6 +189,10 @@ def smoke_terminal_feedback(binary, environment, directory):
         assert '[status] Preparing collection' in text, 'Real terminal must receive startup status'
         assert 'Billing' in text, 'Real terminal must receive billing status'
         assert b'\x1b[2K' in output, 'Billing must clear and refresh a terminal line in place'
+        plain = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+        assert re.search(r'\[[#=\- ]+\]', plain), 'Real terminal must show a billing progress bar'
+        assert re.search(r'\d+%', plain), 'Real terminal must show a billing progress percentage'
+        assert re.search(r'\x1b\[(?:3[0-7]|9[0-7])m', text), 'Real terminal must show status colors'
         assert process.returncode != 0, 'Missing-config terminal probe must fail locally'
         assert 'Collection failed; no success archive created.' in text
     finally:

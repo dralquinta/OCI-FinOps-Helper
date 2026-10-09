@@ -186,3 +186,15 @@ Refactor: stage messages use user-facing collection/export wording, and unrelate
 Final source verification: both system and pinned build interpreter passed all 166 tests after terminal-width refinements. The live status keeps elapsed/retry information visible at ordinary 80-column widths and uses compact record counts only when necessary; wider terminals add an active billing date. Plain final totals preserve exact comma-grouped counts. No production changes remain while the binary builds.
 
 Executable Green: rebuilt with pinned PyInstaller; `python3 scripts/smoke_binary.py <rebuilt-binary>` passed real PTY compact refresh (old artifact failed that assertion), immediate startup, nine CLI service loaders, persistent workers, signed localhost empty/nonempty inventories, archive/cache safety, error exits and suite extraction without Python/OCI on PATH. Installed matching binary at `dist/oci-finops-helper` after confirming no active process used the canonical path. Size: 141,272,816 bytes. No live OCI requests were needed for this UI-only follow-up.
+
+## Follow-up: colored billing progress bar
+
+Red: two new display tests fail on the missing bar/percentage while prior renderer tests remain green. The current compiled artifact also fails the strengthened real-PTY assertion that a billing bar is present, using intentionally missing local OCI configuration and no cloud access. Root owns the strengthened smoke helper; renderer implementation is isolated to performance-agent files.
+
+Plan: ASCII progress bar and percentage for finished billing windows; preserve explicit successful/failed counters, color terminal status and outcomes, honor NO_COLOR, truncate visible text before adding complete/reset ANSI sequences, and keep non-TTY/dumb output plain. Green and executable validation pending.
+
+Green: seven renderer tests pass. A further Red/Green regression preserves the final progress bar rather than immediately erasing it before the summary. Independent real-PTY checks covered widths 12 through 160, ANSI-visible line bounds, reset sequences, failed-window percentage versus successful counters, NO_COLOR including empty values, plain/dumb fallback, and interruption/error outcomes. Prior integration tests remain green. Final full suites and executable build underway.
+
+Full regression: system and pinned build Python each passed all 169 tests. Independent final persistence verification confirms a completed 100-percent bar and newline remain before complete/partial summaries, with distinct successful and failed counters. Real-PTY review found no remaining concerns. Source is frozen while packaging finishes.
+
+Executable Green: strengthened actual PTY smoke passed bar, percentage and color assertions in the rebuilt binary, followed by all existing standalone worker/service/inventory-fixture/archive/cache/extraction checks. Installed matching binary at `dist/oci-finops-helper` with active-process protection. Artifact size: 141,276,944 bytes. No OCI cloud calls required. Follow-up complete.

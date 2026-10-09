@@ -85,3 +85,11 @@ Ownership: performance owns src/utils/feedback.py and tests/utils/test_billing_p
 Verification roster expanded: large_data_verifier owns tests/test_streaming_collection.py and scripts/smoke_binary.py for scale and actual PTY evidence; no overlap with renderer/integration ownership. All three agent source slices are now frozen. Final rebuild and system/pinned regression are running.
 
 Follow-up complete: source and executable verified, compact progress installed in the canonical local binary; all agent-owned slices integrated without conflicts. System/pinned suites each passed 166 tests. Actual PTY smoke verified the requested terminal UX.
+
+## Follow-up: progress bar and terminal color
+
+User requested a bar and color for compact billing progress. Add a width-aware ASCII bar and percentage to real terminals, cyan activity, green success, amber retries/partial outcomes and red failures. Progress measures finished windows including failed windows while success and failure totals remain explicit. Preserve plain redirected logs, TERM=dumb fallback, NO_COLOR opt-out, throttling, bounded memory, redaction and existing interfaces. No runtime dependency is added.
+
+Ownership: performance owns src/utils/feedback.py and tests/utils/test_billing_progress.py; auditor independently verifies terminal rendering and outcome semantics; root owns integration/docs/executable build and smoke adaptations if necessary. Existing tracking PR #15 reused. First Red: real TTY output lacks colored bar/percentage. Validation: ANSI-aware terminal widths, successful/failed/interrupted and zero-window states, no-color/plain output, full unittest suites, real executable PTY smoke.
+
+Follow-up complete: both 169-test suites and rebuilt executable smoke passed, including the genuine-PTY bar/color assertions. Verified binary installed at `dist/oci-finops-helper`; agent slices integrated without conflicts.
